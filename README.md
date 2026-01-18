@@ -6,6 +6,7 @@
 > 为 [usememos/memos](https://github.com/usememos/memos) 提供「每日回顾」功能的前端插件。
 
 以单张卡片翻阅的方式，重新浏览过去记录的内容，帮助复习与产生灵感碰撞。
+<img width="3810" height="1890" alt="image" src="https://github.com/user-attachments/assets/028c9b95-f3bd-44a3-b937-294cacecf590" />
 
 ## 功能
 
@@ -59,3 +60,4 @@
 ## 技术文档
 
 开发指南请参阅 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+
