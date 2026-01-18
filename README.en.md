@@ -6,6 +6,7 @@ English | [中文](./README.md)
 > A "Daily Review" frontend plugin for [usememos/memos](https://github.com/usememos/memos).
 
 Revisit past memos in a card-by-card browsing experience, helping with review and sparking new connections between ideas.
+<img width="3810" height="1890" alt="11" src="https://github.com/user-attachments/assets/83d393af-1c32-43e8-9694-c6234316574b" />
 
 ## Features
 
@@ -59,3 +60,4 @@ Due to limited expertise, the author may not be able to resolve all issues. Issu
 ## Technical Documentation
 
 See [CONTRIBUTING.en.md](./CONTRIBUTING.en.md) for development guide.
+
