@@ -316,7 +316,11 @@
       try {
         const baseOrigin = window.location.origin;
         const isRelative = raw.startsWith('/') || raw.startsWith('./') || raw.startsWith('../');
-        const parsed = new URL(raw, baseOrigin);
+        const isPathRelative = raw.startsWith('./') || raw.startsWith('../');
+
+        // Use full href for path-relative URLs, origin for root-relative URLs
+        const baseUrl = isPathRelative ? window.location.href : baseOrigin;
+        const parsed = new URL(raw, baseUrl);
 
         if (isRelative) {
           // Ensure protocol-relative URLs like //evil.com are not allowed.
@@ -1901,7 +1905,7 @@
         languageSelect.addEventListener('change', (e) => {
           i18n.setLanguage(e.target.value);
           // Recreate dialog to apply new language
-          ui.hideDialog();
+          controller.closeDialog();
           const overlay = document.getElementById(ui.overlayId);
           const oldDialog = document.getElementById(ui.dialogId);
           if (overlay) overlay.remove();
