@@ -1,62 +1,68 @@
-# 📝 Memos 每日回顾插件
+# Memos Daily Review Plugin
 
-[English](./README.en.md) | 中文
+<div align="center">
 
-> 为 [usememos/memos](https://github.com/usememos/memos) 提供「每日回顾」功能的前端插件
+English | [中文](./docs/zh-CN/README.zh-CN.md)
 
-以单张卡片翻阅的方式，重新浏览过去记录的内容，帮助复习与产生灵感碰撞 ✨
-<img width="3810" height="1890" alt="image" src="https://github.com/user-attachments/assets/028c9b95-f3bd-44a3-b937-294cacecf590" />
+A "Daily Review" frontend plugin for [usememos/memos](https://github.com/usememos/memos)
 
-## ✨ 功能
+Automatically recommends a few past memos each day to help you review and spark new ideas
 
-- 🎴 **单卡片翻阅** - 上一张/下一张切换
-- 📅 **每日固定牌堆** - 同一天多次打开显示相同内容
-- 🎲 **换一批** - 本地重新抽取，不额外请求服务器
-- 🧠 **复习偏好** - 避免近期重复，优先呈现久未回顾的内容
-- 💡 **灵感碰撞** - 智能插入同标签但时间跨度大的 Memo 对
-- 🖼️ **图片弹窗预览** - 多图可切换
-- 🎨 **Markdown 渲染** - 支持标题、列表（含嵌套）、行内格式
-- ✏️ **编辑同步** - 可编辑当前 Memo 并保存到服务器
+</div>
 
-## 📦 安装
+---
 
-1. 打开 Memos：**设置 → 系统 → 自定义脚本**
-2. 复制 `memos-daily-review-plugin.js` 的全部内容并粘贴
-3. 保存后刷新页面
-4. 点击右下角的「每日回顾」按钮
+## Preview
 
-> ⚠️ 这是社区插件，非 Memos 官方功能。如遇问题可随时移除。
+<div align="center">
+  <img src="./assets/demo.gif" alt="Plugin Demo" width="800"/>
+</div>
 
-## ⚙️ 配置
+---
 
-在插件「回顾设置」中可调整：
+## Core Features
 
-| 选项 | 可选值 | 默认值 |
-|------|--------|--------|
-| 时间范围 | 全部 / 1年 / 6个月 / 3个月 / 1个月 | 6个月 |
-| 每日张数 | 4 / 8 / 12 / 16 / 20 / 24 | 8 |
+- **One-Click Review** - Review memos from the past 1 month to 1 year
+- **Daily Variety** - What you see today changes tomorrow
+- **Smart Recommendations** - The longer you haven't seen it, the more likely it appears
+- **Keyboard Shortcuts** - Navigate with arrow keys, Esc to close, Ctrl+Enter to save
 
-如需调整高级参数，可编辑 js 文件顶部的 `CONFIG` 对象。
+---
 
-## ✅ 兼容性
+## Quick Start
 
-- ✔️ 适用于支持 API v1 的 Memos 版本
-- 🔓 未登录只能获取公开 Memo
-- 🔐 编辑功能需要登录且有权限
+1. Open Memos: `Settings → System → Additional Script`
+2. Copy the entire content of [`memos-daily-review-plugin.js`](./memos-daily-review-plugin.js) and paste
+3. Save and refresh, the "Daily Review" button will appear in the bottom-right corner
 
-## ❓ 常见问题
+---
 
-**❔ 打开后是空的？** 未登录或时间范围过窄。
-**❔ 编辑保存失败？** 未登录或无编辑权限。
-**❔ 右下角按钮不显示？** 插件在登录页会自动隐藏。
+## FAQ
 
-## 📢 声明
+<details>
+<summary><b>Empty when opened?</b></summary>
 
-本项目由业余爱好者发起，作者本人不懂代码，**全程由 AI 辅助完成开发** 🤖
+Check login status, or adjust time range to "All"
+</details>
 
-由于能力有限，部分问题作者可能无法解决。欢迎提交 Issue、Fork 或 Pull Request 参与改进！
+---
 
-## 📚 技术文档
+## Documentation
 
-开发指南请参阅 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+- [Development Guide (English)](./CONTRIBUTING.md)
+- [开发指南（中文）](./docs/zh-CN/CONTRIBUTING.zh-CN.md)
+- [AI Development Reference](./CLAUDE.md)
 
+---
+
+## License
+
+MIT License
+
+---
+
+<div align="center">
+
+Made with ❤️ and 🤖
+
+</div>

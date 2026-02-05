@@ -1,13 +1,15 @@
 /**
- * Memos Daily Review Plugin（每日回顾）
+ * Memos Daily Review Plugin
  *
  * A single-file front-end script intended for Memos "Additional Script".
- * Adds a bottom-right "每日回顾" button (hidden on /auth) that opens a deck-style review dialog.
+ * Adds a bottom-right "Daily Review" button (hidden on /auth) that opens a deck-style review dialog.
+ *
+ * @version 2.0.0
  *
  * Highlights:
  * - Single-card review with prev/next + counter and a settings tab
  * - Deterministic daily deck (stable within the same day/settings/batch)
- * - Low server load: memo pool cached with TTL; "换一批" regenerates locally
+ * - Low server load: memo pool cached with TTL; "Shuffle" regenerates locally
  * - Review bias: avoid recent repeats; prefer unseen/long-unseen/low-seen memos
  * - "Spark pair": try inserting two far-apart memos sharing a tag
  * - Lightweight Markdown rendering including nested lists; tags extracted to header
@@ -27,16 +29,18 @@
     CACHE_KEY: 'memos-daily-review-cache',
     POOL_KEY: 'memos-daily-review-pool',
     HISTORY_KEY: 'memos-daily-review-history',
+    LANGUAGE_KEY: 'memos-daily-review-language',
+    BATCH_KEY: 'memos-daily-review-batch',
     AUTH_TOKEN_KEY: 'memos_access_token',
     AUTH_EXPIRES_KEY: 'memos_token_expires_at',
     DEFAULT_TIME_RANGE: '6months',
     DEFAULT_COUNT: 8,
     TIME_RANGES: [
-      { value: 'all', label: '全部时间', days: null },
-      { value: '1year', label: '1 年内', days: 365 },
-      { value: '6months', label: '6 个月内', days: 180 },
-      { value: '3months', label: '3 个月内', days: 90 },
-      { value: '1month', label: '1 个月内', days: 30 }
+      { value: 'all', days: null },
+      { value: '1year', days: 365 },
+      { value: '6months', days: 180 },
+      { value: '3months', days: 90 },
+      { value: '1month', days: 30 }
     ],
     COUNT_OPTIONS: [4, 8, 12, 16, 20, 24],
     API_PAGE_SIZE: 1000,
@@ -45,6 +49,153 @@
     NO_REPEAT_DAYS: 3,
     HISTORY_MAX_ITEMS: 5000,
     DECK_SCHEMA_VERSION: 3
+  };
+
+  // ============================================
+  // Precompiled Regex Patterns
+  // ============================================
+  const REGEX_PATTERNS = {
+    leading: /^[ \t]*/,
+    heading: /^(#{1,6})\s+(.*)$/,
+    unorderedList: /^[-*+]\s+(.*)$/,
+    orderedList: /^(\d+)[.)]\s+(.*)$/
+  };
+
+  // ============================================
+  // Internationalization (i18n)
+  // ============================================
+  const i18n = {
+    currentLanguage: null,
+
+    // Detect browser language
+    detectLanguage() {
+      // 1. Check localStorage for saved preference
+      const saved = localStorage.getItem(CONFIG.LANGUAGE_KEY);
+      if (saved && (saved === 'zh-CN' || saved === 'en')) {
+        return saved;
+      }
+
+      // 2. Auto-detect from browser
+      const browserLang = navigator.language || navigator.userLanguage;
+      if (browserLang.startsWith('zh')) {
+        return 'zh-CN';
+      }
+
+      // 3. Default to English
+      return 'en';
+    },
+
+    // Initialize i18n system
+    init() {
+      this.currentLanguage = this.detectLanguage();
+    },
+
+    // Set language and persist to localStorage
+    setLanguage(lang) {
+      this.currentLanguage = lang;
+      localStorage.setItem(CONFIG.LANGUAGE_KEY, lang);
+    },
+
+    // Translation dictionaries
+    translations: {
+      'zh-CN': {
+        // Button and dialog
+        'daily_review': '每日回顾',
+        'close': '关闭',
+        'review_tab': '每日回顾',
+        'settings_tab': '回顾设置',
+        'shuffle': '换一批',
+        'edit_memo': '编辑当前 Memo',
+        'previous': '上一张',
+        'next': '下一张',
+
+        // Settings
+        'time_range': '时间范围',
+        'daily_count': '每日张数',
+        'count_unit': '张',
+        'language': '语言',
+        'chinese': '中文',
+        'english': 'English',
+
+        // Time ranges
+        'time_all': '全部时间',
+        'time_1year': '1 年内',
+        'time_6months': '6 个月内',
+        'time_3months': '3 个月内',
+        'time_1month': '1 个月内',
+
+        // Edit dialog
+        'edit_title': '编辑 Memo',
+        'cancel': '取消',
+        'save': '保存',
+
+        // Status messages
+        'loading': '加载中...',
+        'empty_state': '没有找到符合条件的 Memo',
+        'empty_hint': '尝试调整时间范围或创建更多 Memo',
+        'load_failed': '加载失败，请检查网络连接或登录状态',
+        'edit_not_supported': '当前 Memo 不支持编辑',
+        'saving': '保存中…',
+        'save_failed_auth': '保存失败：需要登录或无权限',
+        'save_failed_permission': '保存失败：无权限',
+        'save_failed_retry': '保存失败，请稍后重试',
+
+        // Description
+        'single_card_desc': '单张卡片浏览模式，专注于当前内容。可通过左右箭头键或按钮切换。'
+      },
+
+      'en': {
+        // Button and dialog
+        'daily_review': 'Daily Review',
+        'close': 'Close',
+        'review_tab': 'Review',
+        'settings_tab': 'Settings',
+        'shuffle': 'Shuffle',
+        'edit_memo': 'Edit Memo',
+        'previous': 'Previous',
+        'next': 'Next',
+
+        // Settings
+        'time_range': 'Time Range',
+        'daily_count': 'Daily Count',
+        'count_unit': ' cards',
+        'language': 'Language',
+        'chinese': '中文',
+        'english': 'English',
+
+        // Time ranges
+        'time_all': 'All Time',
+        'time_1year': 'Past Year',
+        'time_6months': 'Past 6 Months',
+        'time_3months': 'Past 3 Months',
+        'time_1month': 'Past Month',
+
+        // Edit dialog
+        'edit_title': 'Edit Memo',
+        'cancel': 'Cancel',
+        'save': 'Save',
+
+        // Status messages
+        'loading': 'Loading...',
+        'empty_state': 'No memos found',
+        'empty_hint': 'Try adjusting the time range or create more memos',
+        'load_failed': 'Failed to load. Please check your network or login status',
+        'edit_not_supported': 'This memo cannot be edited',
+        'saving': 'Saving...',
+        'save_failed_auth': 'Save failed: Login required',
+        'save_failed_permission': 'Save failed: Permission denied',
+        'save_failed_retry': 'Save failed. Please try again later',
+
+        // Description
+        'single_card_desc': 'Single card browsing mode. Focus on current content. Use arrow keys or buttons to navigate.'
+      }
+    },
+
+    // Translation function
+    t(key) {
+      const lang = this.currentLanguage || 'en';
+      return this.translations[lang][key] || this.translations['en'][key] || key;
+    }
   };
 
   // ============================================
@@ -92,13 +243,21 @@
     // Format timestamp to readable date
     formatDate(timestamp) {
       const date = new Date(timestamp);
-      return date.toLocaleDateString('zh-CN', {
+      const locale = i18n.currentLanguage === 'zh-CN' ? 'zh-CN' : 'en-US';
+      return date.toLocaleDateString(locale, {
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
         hour: '2-digit',
         minute: '2-digit'
       });
+    },
+
+    toTimeMs(value, fallbackMs = 0) {
+      if (!value) return fallbackMs;
+      if (typeof value === 'number') return Number.isFinite(value) ? value : fallbackMs;
+      const ms = new Date(value).getTime();
+      return Number.isFinite(ms) ? ms : fallbackMs;
     },
 
     parseLocalDay(dayString) {
@@ -154,11 +313,21 @@
       // Allow in-page anchors
       if (raw.startsWith('#')) return raw;
 
-      // Allow relative URLs (common for attachments)
-      if (raw.startsWith('/') || raw.startsWith('./') || raw.startsWith('../')) return raw;
-
       try {
-        const parsed = new URL(raw, window.location.origin);
+        const baseOrigin = window.location.origin;
+        const isRelative = raw.startsWith('/') || raw.startsWith('./') || raw.startsWith('../');
+        const isPathRelative = raw.startsWith('./') || raw.startsWith('../');
+
+        // Use full href for path-relative URLs, origin for root-relative URLs
+        const baseUrl = isPathRelative ? window.location.href : baseOrigin;
+        const parsed = new URL(raw, baseUrl);
+
+        if (isRelative) {
+          // Ensure protocol-relative URLs like //evil.com are not allowed.
+          if (parsed.origin !== baseOrigin) return null;
+          return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+        }
+
         const protocol = (parsed.protocol || '').toLowerCase();
         if (protocol === 'http:' || protocol === 'https:') {
           return parsed.href;
@@ -254,6 +423,7 @@
       let paragraphLines = [];
 
       const container = document.createElement('div');
+      const fragment = document.createDocumentFragment();
       const listStack = [];
       const lastLiByLevel = [];
       const indentWidthStack = [];
@@ -263,7 +433,7 @@
         if (paragraphLines.length > 0) {
           const p = document.createElement('p');
           p.innerHTML = paragraphLines.join('<br>');
-          container.appendChild(p);
+          fragment.appendChild(p);
           paragraphLines = [];
         }
       };
@@ -320,17 +490,17 @@
         for (let current = listStack.length; current <= level; current++) {
           const listEl = document.createElement(listType);
           if (current === 0) {
-            container.appendChild(listEl);
+            fragment.appendChild(listEl);
           } else {
             const parentLi = lastLiByLevel[current - 1];
-            (parentLi || container).appendChild(listEl);
+            (parentLi || fragment).appendChild(listEl);
           }
           listStack.push({ type: listType, el: listEl });
         }
       };
 
       for (const line of lines) {
-        const leadingMatch = line.match(/^[ \t]*/);
+        const leadingMatch = line.match(REGEX_PATTERNS.leading);
         const leading = ((leadingMatch && leadingMatch[0]) || '').replace(/\t/g, '  ');
         const indentWidth = leading.length;
         const trimmed = line.trim();
@@ -345,18 +515,18 @@
           continue;
         }
 
-        const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+        const headingMatch = trimmed.match(REGEX_PATTERNS.heading);
         if (headingMatch) {
           const level = headingMatch[1].length;
           flushParagraph();
           closeAllLists();
           const h = document.createElement(`h${level}`);
           h.innerHTML = this.formatInlineMarkdown(headingMatch[2]);
-          container.appendChild(h);
+          fragment.appendChild(h);
           continue;
         }
 
-        const ulMatch = trimmed.match(/^[-*+]\s+(.*)$/);
+        const ulMatch = trimmed.match(REGEX_PATTERNS.unorderedList);
         if (ulMatch) {
           flushParagraph();
           pendingBlankLineInList = false;
@@ -370,7 +540,7 @@
           continue;
         }
 
-        const olMatch = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
+        const olMatch = trimmed.match(REGEX_PATTERNS.orderedList);
         if (olMatch) {
           flushParagraph();
           pendingBlankLineInList = false;
@@ -390,6 +560,7 @@
 
       flushParagraph();
       closeAllLists();
+      container.appendChild(fragment);
       return container.innerHTML;
     }
   };
@@ -418,6 +589,37 @@
         localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(settings));
       } catch (e) {
         console.error('Failed to save daily review settings:', e);
+      }
+    }
+  };
+
+  // ============================================
+  // Batch State Service
+  // ============================================
+  const batchService = {
+    // Load batch number for today
+    load() {
+      try {
+        const saved = localStorage.getItem(CONFIG.BATCH_KEY);
+        if (!saved) return 0;
+        const data = JSON.parse(saved);
+        const today = utils.getDailySeed();
+        // Reset batch to 0 if it's a new day
+        if (data.day !== today) return 0;
+        return data.batch || 0;
+      } catch (e) {
+        return 0;
+      }
+    },
+
+    // Save batch number for today
+    save(batch) {
+      try {
+        const today = utils.getDailySeed();
+        const data = { day: today, batch };
+        localStorage.setItem(CONFIG.BATCH_KEY, JSON.stringify(data));
+      } catch (e) {
+        console.error('Failed to save batch state:', e);
       }
     }
   };
@@ -1525,8 +1727,8 @@
 
       const button = document.createElement('button');
       button.id = this.buttonId;
-      button.title = '每日回顾';
-      button.textContent = '每日回顾';
+      button.title = i18n.t('daily_review');
+      button.textContent = i18n.t('daily_review');
       button.style.display = 'none';
       button.addEventListener('click', () => controller.openDialog());
       document.body.appendChild(button);
@@ -1535,6 +1737,23 @@
     isAuthRoute() {
       const path = window.location.pathname || '';
       return path === '/auth' || path.startsWith('/auth/');
+    },
+
+    getActiveTab() {
+      const dialog = document.getElementById(this.dialogId);
+      if (!dialog) return 'review';
+      const active = dialog.querySelector('.daily-review-tab.active');
+      return active && active.dataset && active.dataset.tab ? active.dataset.tab : 'review';
+    },
+
+    isImagePreviewOpen() {
+      const overlay = document.getElementById(this.imageOverlayId);
+      return !!(overlay && overlay.classList.contains('visible'));
+    },
+
+    isEditorOpen() {
+      const overlay = document.getElementById(this.editOverlayId);
+      return !!(overlay && overlay.classList.contains('visible'));
     },
 
     showFloatingButton() {
@@ -1566,8 +1785,8 @@
       dialog.id = this.dialogId;
       dialog.innerHTML = `
         <div class="daily-review-header">
-          <h2 class="daily-review-title">每日回顾</h2>
-          <button class="daily-review-close" title="关闭">
+          <h2 class="daily-review-title">${i18n.t('daily_review')}</h2>
+          <button class="daily-review-close" title="${i18n.t('close')}">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -1575,8 +1794,8 @@
           </button>
         </div>
         <div class="daily-review-tabs">
-          <button class="daily-review-tab active" data-tab="review">每日回顾</button>
-          <button class="daily-review-tab" data-tab="settings">回顾设置</button>
+          <button class="daily-review-tab active" data-tab="review">${i18n.t('review_tab')}</button>
+          <button class="daily-review-tab" data-tab="settings">${i18n.t('settings_tab')}</button>
         </div>
         <div class="daily-review-body">
           <div class="daily-review-panel" id="${this.panelReviewId}">
@@ -1589,13 +1808,13 @@
               </div>
               <div class="daily-review-deck-footer">
                 <div class="daily-review-actions">
-                  <button class="daily-review-icon-btn" id="${this.refreshId}" title="换一批">
+                  <button class="daily-review-icon-btn" id="${this.refreshId}" title="${i18n.t('shuffle')}">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
                       <path d="M21 3v5h-5"></path>
                     </svg>
                   </button>
-                  <button class="daily-review-icon-btn" id="${this.editId}" title="编辑当前 Memo">
+                  <button class="daily-review-icon-btn" id="${this.editId}" title="${i18n.t('edit_memo')}">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M12 20h9"></path>
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
@@ -1603,13 +1822,13 @@
                   </button>
                 </div>
                 <div class="daily-review-pager">
-                  <button class="daily-review-icon-btn" id="${this.prevId}" title="上一张">
+                  <button class="daily-review-icon-btn" id="${this.prevId}" title="${i18n.t('previous')}">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M15 18l-6-6 6-6"></path>
                     </svg>
                   </button>
                   <div class="daily-review-counter" id="${this.counterId}">0 / 0</div>
-                  <button class="daily-review-icon-btn" id="${this.nextId}" title="下一张">
+                  <button class="daily-review-icon-btn" id="${this.nextId}" title="${i18n.t('next')}">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M9 18l6-6-6-6"></path>
                     </svg>
@@ -1621,25 +1840,32 @@
           <div class="daily-review-panel hidden" id="${this.panelSettingsId}">
             <div class="daily-review-settings">
               <div class="daily-review-setting-group">
-                <label class="daily-review-setting-label">时间范围</label>
+                <label class="daily-review-setting-label">${i18n.t('time_range')}</label>
                 <select class="daily-review-select" id="daily-review-time-range">
-                  ${CONFIG.TIME_RANGES.map(t => `<option value="${t.value}">${t.label}</option>`).join('')}
+                  ${CONFIG.TIME_RANGES.map(t => `<option value="${t.value}">${i18n.t('time_' + t.value)}</option>`).join('')}
                 </select>
               </div>
               <div class="daily-review-setting-group">
-                <label class="daily-review-setting-label">每日张数</label>
+                <label class="daily-review-setting-label">${i18n.t('daily_count')}</label>
                 <select class="daily-review-select" id="daily-review-count">
-                  ${CONFIG.COUNT_OPTIONS.map(c => `<option value="${c}">${c} 张</option>`).join('')}
+                  ${CONFIG.COUNT_OPTIONS.map(c => `<option value="${c}">${c}${i18n.t('count_unit')}</option>`).join('')}
+                </select>
+              </div>
+              <div class="daily-review-setting-group">
+                <label class="daily-review-setting-label">${i18n.t('language')}</label>
+                <select class="daily-review-select daily-review-language-select">
+                  <option value="zh-CN" ${i18n.currentLanguage === 'zh-CN' ? 'selected' : ''}>${i18n.t('chinese')}</option>
+                  <option value="en" ${i18n.currentLanguage === 'en' ? 'selected' : ''}>${i18n.t('english')}</option>
                 </select>
               </div>
             </div>
             <div class="daily-review-settings-hint">
-              默认打开为“单张翻阅”模式：上一张/下一张在本地切换，不会额外请求服务器；“换一批”只会重新抽取，不会重新拉取数据。
+              ${i18n.t('single_card_desc')}
             </div>
           </div>
         </div>
         <div class="daily-review-footer">
-          <button class="daily-review-btn daily-review-btn-primary" id="daily-review-close-btn">关闭</button>
+          <button class="daily-review-btn daily-review-btn-primary" id="daily-review-close-btn">${i18n.t('close')}</button>
         </div>
       `;
 
@@ -1673,6 +1899,22 @@
         controller.onSettingsChanged();
       });
 
+      // Language selector
+      const languageSelect = dialog.querySelector('.daily-review-language-select');
+      if (languageSelect) {
+        languageSelect.addEventListener('change', (e) => {
+          i18n.setLanguage(e.target.value);
+          // Recreate dialog to apply new language
+          controller.closeDialog();
+          const overlay = document.getElementById(ui.overlayId);
+          const oldDialog = document.getElementById(ui.dialogId);
+          if (overlay) overlay.remove();
+          if (oldDialog) oldDialog.remove();
+          ui.createDialog();
+          controller.openDialog();
+        });
+      }
+
       document.body.appendChild(overlay);
       document.body.appendChild(dialog);
     },
@@ -1688,9 +1930,9 @@
       dialog.id = this.editDialogId;
       dialog.innerHTML = `
         <div class="daily-review-edit-header">
-          <div class="daily-review-edit-title">编辑 Memo</div>
+          <div class="daily-review-edit-title">${i18n.t('edit_title')}</div>
           <div class="daily-review-edit-status" id="${this.editStatusId}"></div>
-          <button class="daily-review-close" title="关闭">
+          <button class="daily-review-close" title="${i18n.t('close')}">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -1699,8 +1941,8 @@
         </div>
         <textarea class="daily-review-edit-textarea" id="${this.editTextareaId}" spellcheck="false"></textarea>
         <div class="daily-review-edit-footer">
-          <button class="daily-review-btn daily-review-btn-secondary" id="${this.editCancelId}">取消</button>
-          <button class="daily-review-btn daily-review-btn-primary" id="${this.editSaveId}">保存</button>
+          <button class="daily-review-btn daily-review-btn-secondary" id="${this.editCancelId}">${i18n.t('cancel')}</button>
+          <button class="daily-review-btn daily-review-btn-primary" id="${this.editSaveId}">${i18n.t('save')}</button>
         </div>
       `;
 
@@ -1774,17 +2016,17 @@
       dialog.innerHTML = `
         <img id="${this.imagePreviewId}" alt="">
         <div id="${this.imageCaptionId}"></div>
-        <button class="daily-review-image-nav" id="${this.imagePrevId}" title="上一张">
+        <button class="daily-review-image-nav" id="${this.imagePrevId}" title="${i18n.t('previous')}">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M15 18l-6-6 6-6"></path>
           </svg>
         </button>
-        <button class="daily-review-image-nav" id="${this.imageNextId}" title="下一张">
+        <button class="daily-review-image-nav" id="${this.imageNextId}" title="${i18n.t('next')}">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M9 18l6-6-6-6"></path>
           </svg>
         </button>
-        <button id="${this.imageCloseId}" title="关闭">
+        <button id="${this.imageCloseId}" title="${i18n.t('close')}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -1816,8 +2058,18 @@
       if (overlay && dialog) {
         // Set initial settings values
         const settings = settingsService.load();
-        dialog.querySelector('#daily-review-time-range').value = settings.timeRange;
-        dialog.querySelector('#daily-review-count').value = settings.count;
+        const timeRangeSelect = dialog.querySelector('#daily-review-time-range');
+        if (timeRangeSelect) {
+          const validTimeRange = CONFIG.TIME_RANGES.some((t) => t.value === settings.timeRange);
+          timeRangeSelect.value = validTimeRange ? settings.timeRange : CONFIG.DEFAULT_TIME_RANGE;
+        }
+
+        const countSelect = dialog.querySelector('#daily-review-count');
+        if (countSelect) {
+          const countValue = typeof settings.count === 'number' ? settings.count : parseInt(settings.count, 10);
+          const validCount = CONFIG.COUNT_OPTIONS.includes(countValue);
+          countSelect.value = String(validCount ? countValue : CONFIG.DEFAULT_COUNT);
+        }
         this.switchTab('review');
 
         // Show with animation
@@ -1854,16 +2106,16 @@
       if (type === 'loading') {
         state.innerHTML = `
           <div class="daily-review-loading-spinner"></div>
-          <div>加载中...</div>
+          <div>${i18n.t('loading')}</div>
         `;
       } else if (type === 'empty') {
         state.innerHTML = `
           <div style="font-size: 22px;">📝</div>
-          <div>没有找到符合条件的 Memo</div>
-          <div style="font-size: 13px;">尝试调整时间范围或创建更多 Memo</div>
+          <div>${i18n.t('empty_state')}</div>
+          <div style="font-size: 13px;">${i18n.t('empty_hint')}</div>
         `;
       } else if (type === 'error') {
-        state.innerHTML = `<div>${utils.escapeHtml(message || '加载失败，请检查网络连接或登录状态')}</div>`;
+        state.innerHTML = `<div>${utils.escapeHtml(message || i18n.t('load_failed'))}</div>`;
       }
     },
 
@@ -1884,7 +2136,7 @@
       const next = document.getElementById(this.nextId);
       if (!card) return;
 
-      const createTime = memo.createTime ? new Date(memo.createTime).getTime() : Date.now();
+      const createTime = utils.toTimeMs(memo.createTime, Date.now());
       const rawContent = memo.content || '';
       const memoKey = memo.id || utils.getMemoId(memo) || `memo-${Math.random().toString(36).slice(2)}`;
       const tags = Array.isArray(memo.tags) ? memo.tags : utils.extractTags(rawContent);
@@ -1896,7 +2148,14 @@
         .map(img => img.externalLink || `/file/${img.name}/${img.filename}`)
         .map((url) => utils.sanitizeUrl(url))
         .filter(Boolean);
-      this.imageGroups = {};
+
+      // Optimized: Maintain recent image groups instead of resetting
+      if (!this.imageGroups) this.imageGroups = {};
+      const keys = Object.keys(this.imageGroups);
+      if (keys.length > 10) {
+        // Keep only the most recent 10 entries
+        keys.slice(0, keys.length - 10).forEach(k => delete this.imageGroups[k]);
+      }
       if (imageUrls.length > 0) {
         this.imageGroups[memoKey] = imageUrls;
       }
@@ -1927,9 +2186,20 @@
         ` : ''}
       `;
 
+      // Reset scroll position when switching cards.
+      card.scrollTop = 0;
+
       if (counter) counter.textContent = `${index + 1} / ${total}`;
       if (prev) prev.disabled = index <= 0;
       if (next) next.disabled = index >= total - 1;
+
+      // Disable edit button if current memo cannot be updated via API.
+      const edit = document.getElementById(this.editId);
+      if (edit) {
+        const editable = !!memo.name;
+        edit.disabled = !editable;
+        edit.title = editable ? i18n.t('edit_memo') : i18n.t('edit_not_supported');
+      }
 
       this.bindImagePreview();
     },
@@ -1937,17 +2207,28 @@
     bindImagePreview() {
       const content = document.getElementById(this.cardId) || document.getElementById(this.deckId);
       if (!content) return;
-      const links = content.querySelectorAll('.daily-review-memo-image-link');
-      links.forEach(link => {
-        link.addEventListener('click', (event) => {
+
+      // Optimized: Use event delegation instead of individual listeners
+      // Remove old listener if exists
+      if (content._imagePreviewHandler) {
+        content.removeEventListener('click', content._imagePreviewHandler);
+      }
+
+      // Add single delegated listener
+      const handler = (event) => {
+        const link = event.target.closest('.daily-review-memo-image-link');
+        if (link) {
           event.preventDefault();
           const memoKey = link.dataset.memoKey;
           const index = parseInt(link.dataset.imageIndex || '0', 10);
           if (memoKey && this.imageGroups[memoKey]) {
             this.openImagePreview(memoKey, index);
           }
-        });
-      });
+        }
+      };
+
+      content._imagePreviewHandler = handler;
+      content.addEventListener('click', handler);
     },
 
     openImagePreview(memoKey, index) {
@@ -2016,8 +2297,12 @@
     viewedInSession: new Set(),
     currentDeckKey: '',
     isSavingEdit: false,
+    keydownHandler: null,
 
     init() {
+      if (window.__dailyReviewInitialized) return;
+      window.__dailyReviewInitialized = true;
+
       ui.injectStyles();
       ui.createFloatingButton();
       ui.createDialog();
@@ -2028,13 +2313,81 @@
       this.patchRouteEvents();
       window.addEventListener('popstate', () => this.updateEntryVisibility());
       window.addEventListener('daily-review-routechange', () => this.updateEntryVisibility());
+      this.bindKeyboardShortcuts();
+    },
+
+    bindKeyboardShortcuts() {
+      if (this.keydownHandler) return;
+
+      const isTextInput = (target) => {
+        const el = target && target.nodeType === 1 ? target : null;
+        if (!el) return false;
+        const tag = (el.tagName || '').toUpperCase();
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+        return !!el.isContentEditable;
+      };
+
+      this.keydownHandler = (event) => {
+        if (!this.isOpen) return;
+        if (!event || typeof event.key !== 'string') return;
+
+        const key = event.key;
+
+        // Esc closes overlays first, then the dialog.
+        if (key === 'Escape') {
+          if (ui.isImagePreviewOpen()) {
+            ui.closeImagePreview();
+          } else if (ui.isEditorOpen()) {
+            this.closeEditor();
+          } else {
+            this.closeDialog();
+          }
+          event.preventDefault();
+          return;
+        }
+
+        // When image preview is open, arrow keys navigate images.
+        if (ui.isImagePreviewOpen()) {
+          if (key === 'ArrowLeft') {
+            ui.navigateImage(-1);
+            event.preventDefault();
+          } else if (key === 'ArrowRight') {
+            ui.navigateImage(1);
+            event.preventDefault();
+          }
+          return;
+        }
+
+        // When editor is open, allow quick save.
+        if (ui.isEditorOpen()) {
+          if ((event.ctrlKey || event.metaKey) && key === 'Enter') {
+            this.saveEditor();
+            event.preventDefault();
+          }
+          return;
+        }
+
+        if (isTextInput(event.target)) return;
+        if (ui.getActiveTab() !== 'review') return;
+
+        if (key === 'ArrowLeft') {
+          this.prev();
+          event.preventDefault();
+        } else if (key === 'ArrowRight') {
+          this.next();
+          event.preventDefault();
+        }
+      };
+
+      document.addEventListener('keydown', this.keydownHandler);
     },
 
     async openDialog() {
       if (ui.isAuthRoute()) return;
       if (this.isOpen) return;
       this.isOpen = true;
-      this.deckBatch = 0;
+      // Load batch state from localStorage (persists across dialog open/close)
+      this.deckBatch = batchService.load();
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
@@ -2078,7 +2431,9 @@
     },
 
     onSettingsChanged() {
+      // Reset batch to 0 when settings change
       this.deckBatch = 0;
+      batchService.save(this.deckBatch);
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
@@ -2087,6 +2442,8 @@
 
     newBatch() {
       this.deckBatch += 1;
+      // Save batch state to localStorage
+      batchService.save(this.deckBatch);
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
@@ -2098,7 +2455,7 @@
       const memo = this.deckMemos[this.deckIndex];
       if (!memo || !memo.name) {
         // Use alert instead of setReviewState to avoid hiding the deck
-        alert('当前 Memo 不支持编辑');
+        alert(i18n.t('edit_not_supported'));
         return;
       }
       ui.openEditor(memo.content || '');
@@ -2124,7 +2481,7 @@
 
       this.isSavingEdit = true;
       ui.setEditorSaving(true);
-      ui.setEditStatus('保存中…');
+      ui.setEditStatus(i18n.t('saving'));
 
       try {
         const updated = await apiService.updateMemoContent(memo.name, nextContent || '');
@@ -2163,11 +2520,11 @@
         console.error('Failed to update memo:', e);
         const msg = String(e && e.message ? e.message : e);
         if (msg.includes('401') || msg.includes('Unauthenticated') || msg.includes('authentication')) {
-          ui.setEditStatus('保存失败：需要登录或无权限');
+          ui.setEditStatus(i18n.t('save_failed_auth'));
         } else if (msg.includes('403') || msg.includes('PermissionDenied') || msg.includes('permission')) {
-          ui.setEditStatus('保存失败：无权限');
+          ui.setEditStatus(i18n.t('save_failed_permission'));
         } else {
-          ui.setEditStatus('保存失败，请稍后重试');
+          ui.setEditStatus(i18n.t('save_failed_retry'));
         }
       } finally {
         this.isSavingEdit = false;
@@ -2239,8 +2596,8 @@
 
     buildBuckets(pool) {
       const sorted = [...pool].sort((a, b) => {
-        const ta = a.createTime ? new Date(a.createTime).getTime() : 0;
-        const tb = b.createTime ? new Date(b.createTime).getTime() : 0;
+        const ta = utils.toTimeMs(a.createTime, 0);
+        const tb = utils.toTimeMs(b.createTime, 0);
         return ta - tb;
       });
       if (sorted.length === 0) return [[], [], []];
@@ -2261,20 +2618,17 @@
       return targets;
     },
 
-    sortByReviewPriority(candidates, history, today, seedPrefix, minDaysSince) {
-      const scored = candidates
-        .filter((m) => m && m.id)
-        .filter((m) => {
-          const daysSince = historyService.getDaysSinceShown(history, m.id, today);
-          return daysSince >= minDaysSince;
-        })
-        .map((m) => {
-          const entry = history.items[m.id];
+    scoreByReviewPriority(candidates, history, today, seedPrefix) {
+      // Optimized: Calculate daysSince once and sort once per bucket.
+      const scored = (candidates || [])
+        .filter((memo) => memo && memo.id)
+        .map((memo) => {
+          const entry = history.items[memo.id];
           const shownCount = entry?.shownCount || 0;
-          const daysSince = historyService.getDaysSinceShown(history, m.id, today);
+          const daysSince = historyService.getDaysSinceShown(history, memo.id, today);
           const never = !entry || !entry.lastShownDay;
-          const tie = utils.stringToSeed(`${seedPrefix}-${m.id}`);
-          return { m, never, daysSince, shownCount, tie };
+          const tie = utils.stringToSeed(`${seedPrefix}-${memo.id}`);
+          return { memo, never, daysSince, shownCount, tie };
         });
 
       scored.sort((a, b) => {
@@ -2284,19 +2638,21 @@
         return a.tie - b.tie;
       });
 
-      return scored.map((s) => s.m);
+      return scored;
     },
 
     pickFromBucket(bucket, target, history, today, seedPrefix) {
       if (target <= 0) return [];
       const relax = [CONFIG.NO_REPEAT_DAYS, 2, 1, 0];
+      const scored = this.scoreByReviewPriority(bucket, history, today, seedPrefix);
       const picked = [];
       const pickedIds = new Set();
       for (const minDays of relax) {
         if (picked.length >= target) break;
-        const ordered = this.sortByReviewPriority(bucket, history, today, seedPrefix, minDays);
-        for (const memo of ordered) {
+        for (const item of scored) {
           if (picked.length >= target) break;
+          if (item.daysSince < minDays) continue;
+          const memo = item.memo;
           if (pickedIds.has(memo.id)) continue;
           pickedIds.add(memo.id);
           picked.push(memo);
@@ -2334,13 +2690,16 @@
       const candidates = [];
       for (const [tag, memos] of tagMap.entries()) {
         if (memos.length < 2) continue;
-        const sorted = [...memos].sort((a, b) => {
-          const ta = a.createTime ? new Date(a.createTime).getTime() : 0;
-          const tb = b.createTime ? new Date(b.createTime).getTime() : 0;
-          return ta - tb;
-        });
-        const oldest = sorted[0];
-        const newest = sorted[sorted.length - 1];
+        // Optimized: Find min/max in O(n) instead of sorting in O(n log n)
+        let oldest = memos[0];
+        let newest = memos[0];
+        for (const memo of memos) {
+          const t = utils.toTimeMs(memo.createTime, 0);
+          const oldestTime = utils.toTimeMs(oldest.createTime, 0);
+          const newestTime = utils.toTimeMs(newest.createTime, 0);
+          if (t < oldestTime) oldest = memo;
+          if (t > newestTime) newest = memo;
+        }
         if (!oldest || !newest || oldest.id === newest.id) continue;
         const tie = utils.stringToSeed(`${seedPrefix}-tag-${tag}`);
         candidates.push({ tag, oldest, newest, tie });
@@ -2437,7 +2796,7 @@
         this.markViewedCurrent();
       } catch (error) {
         console.error('Failed to load daily review deck:', error);
-        ui.setReviewState('error', '加载失败，请检查网络连接或登录状态');
+        ui.setReviewState('error', i18n.t('load_failed'));
       }
     }
   };
@@ -2445,6 +2804,9 @@
   // ============================================
   // Entry Point
   // ============================================
+  // Initialize i18n
+  i18n.init();
+
   // Wait for DOM to be ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
