@@ -8,11 +8,13 @@ memos-daily-review-plugin/
 ├── README.md                       # User documentation (English)
 ├── CONTRIBUTING.md                 # Development guide (English)
 ├── CLAUDE.md                       # This file
-├── demo.gif                        # Demo animation
 ├── .gitignore                      # Git ignore rules
-└── zh-CN/                          # Chinese documentation
-    ├── README.zh-CN.md             # User documentation (Chinese)
-    └── CONTRIBUTING.zh-CN.md       # Development guide (Chinese)
+├── assets/
+│   └── demo.gif                    # Demo animation
+└── docs/
+    └── zh-CN/                      # Chinese documentation
+        ├── README.zh-CN.md         # User documentation (Chinese)
+        └── CONTRIBUTING.zh-CN.md   # Development guide (Chinese)
 ```
 
 ---
