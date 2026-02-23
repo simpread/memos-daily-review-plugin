@@ -209,7 +209,7 @@ node --test --test-isolation=none tests/algorithm.test.js
 - [ ] Same deck shown on same day
 - [ ] "Shuffle" gets new deck (no server request)
 - [ ] Light/dark theme adaptation
-- [ ] Empty state shown when no memos
+- [ ] Empty state shown when no memos (with icon and hint text)
 - [ ] Markdown renders correctly (headings, lists, bold, italic, etc.)
 - [ ] Nested lists display proper indentation
 - [ ] Image click opens popup preview
@@ -218,6 +218,19 @@ node --test --test-isolation=none tests/algorithm.test.js
 - [ ] Correct behavior when not logged in
 - [ ] v0.25.3 compatibility fallback works (`next_page_token`, session endpoint path)
 - [ ] v0.26.x compatibility path works (`/api/v1/auth/me`, refresh endpoint)
+
+### UI/UX Tests
+- [ ] Icon buttons show tooltip hints
+- [ ] Card switching has slide animations (left/right direction)
+- [ ] New batch has fade-in animation
+- [ ] Deletion has fade-out animation
+- [ ] Loading shows spinning spinner
+- [ ] Counter change has scale animation
+- [ ] Edit dialog has visual feedback
+- [ ] Image preview has smooth transitions
+- [ ] Mobile layout works correctly (< 640px width)
+- [ ] Mobile button sizes are adequate (44px touch targets)
+- [ ] Mobile action bar stacks vertically
 
 ### Performance Tests
 - [ ] Use Performance panel to test large datasets (1000+ memos)

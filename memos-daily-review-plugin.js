@@ -168,6 +168,7 @@
         'delete_memo': '删除当前 Memo',
         'delete_confirm': '确定要删除这条 Memo 吗？此操作不可撤销。',
         'delete_failed': '删除失败，请稍后重试',
+        'save_success': '保存成功',
         'click_to_zoom': '点击图片可放大查看',
 
         // Description
@@ -225,6 +226,7 @@
         'delete_memo': 'Delete Memo',
         'delete_confirm': 'Are you sure you want to delete this memo? This cannot be undone.',
         'delete_failed': 'Delete failed. Please try again later',
+        'save_success': 'Saved successfully',
         'click_to_zoom': 'Click image to zoom',
 
         // Description
@@ -1927,7 +1929,7 @@
           background-color: var(--card);
           border: 1px solid var(--border);
           border-radius: 12px;
-          box-shadow: 0 10px 26px rgba(0, 0, 0, 0.12);
+          box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15), 0 4px 12px rgba(0, 0, 0, 0.08);
         }
         .daily-review-card-back {
           position: absolute;
@@ -1942,12 +1944,14 @@
           filter: saturate(0.9);
         }
         .daily-review-card-back.back-1 {
-          transform: translate(-50%, -50%) translateY(10px) scale(0.985);
-          opacity: 0.5;
+          transform: translate(-50%, -50%) translateY(12px) scale(0.985);
+          opacity: 0.45;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
         }
         .daily-review-card-back.back-2 {
-          transform: translate(-50%, -50%) translateY(18px) scale(0.97);
-          opacity: 0.4;
+          transform: translate(-50%, -50%) translateY(22px) scale(0.97);
+          opacity: 0.35;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
         }
         .daily-review-card-front {
           position: relative;
@@ -1956,6 +1960,8 @@
           overflow-y: auto;
           height: 100%;
           scrollbar-gutter: stable;
+          will-change: transform;
+          backface-visibility: hidden;
         }
 
         .daily-review-deck-footer {
@@ -1980,22 +1986,42 @@
           color: var(--muted-foreground);
           min-width: 64px;
           text-align: center;
+          transition: transform 0.05s, opacity 0.05s;
         }
         .daily-review-icon-btn {
           width: 40px;
           height: 40px;
           border-radius: 999px;
-          border: 1px solid var(--border);
+          border: 1.5px solid var(--border);
           background-color: var(--background);
           color: var(--foreground);
           display: inline-flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
-          transition: background-color 0.2s, transform 0.15s;
+          transition: background-color 0.2s, transform 0.15s, box-shadow 0.2s;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+          position: relative;
+          overflow: hidden;
+        }
+        .daily-review-icon-btn::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: radial-gradient(circle, rgba(0, 0, 0, 0.1) 0%, transparent 70%);
+          opacity: 0;
+          transform: scale(0);
+          transition: transform 0.3s, opacity 0.3s;
+        }
+        .daily-review-icon-btn:active::before {
+          transform: scale(1);
+          opacity: 1;
+          transition: transform 0s, opacity 0s;
         }
         .daily-review-icon-btn:hover {
           background-color: var(--accent);
+          transform: translateY(-1px);
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
         }
         .daily-review-icon-btn:active {
           transform: scale(0.98);
@@ -2003,6 +2029,33 @@
         .daily-review-icon-btn:disabled {
           opacity: 0.5;
           cursor: not-allowed;
+        }
+        .daily-review-icon-btn.delete-btn {
+          border-color: rgba(239, 68, 68, 0.3);
+          color: var(--destructive, rgb(239, 68, 68));
+        }
+        .daily-review-icon-btn.delete-btn:hover {
+          border-color: rgba(239, 68, 68, 0.5);
+          background-color: rgba(239, 68, 68, 0.05);
+        }
+        .daily-review-icon-btn[title]::after {
+          content: attr(title);
+          position: absolute;
+          bottom: -32px;
+          left: 50%;
+          transform: translateX(-50%);
+          padding: 4px 8px;
+          background-color: rgba(0, 0, 0, 0.8);
+          color: white;
+          font-size: 11px;
+          border-radius: 4px;
+          white-space: nowrap;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 0.2s;
+        }
+        .daily-review-icon-btn:hover::after {
+          opacity: 1;
         }
 
         #${this.editOverlayId} {
@@ -2032,6 +2085,13 @@
           display: flex;
           flex-direction: column;
           overflow: hidden;
+          transform: scale(0.95);
+          opacity: 0;
+          transition: transform 0.2s, opacity 0.2s;
+        }
+        #${this.editOverlayId}.visible #${this.editDialogId} {
+          transform: scale(1);
+          opacity: 1;
         }
         .daily-review-edit-header {
           padding: 12px 16px;
@@ -2051,6 +2111,13 @@
           color: var(--muted-foreground);
           text-align: right;
           flex: 1;
+          transition: color 0.2s;
+        }
+        .daily-review-edit-status.success {
+          color: var(--success, rgb(34, 197, 94));
+        }
+        .daily-review-edit-status.error {
+          color: var(--destructive, rgb(239, 68, 68));
         }
         .daily-review-edit-textarea {
           width: 100%;
@@ -2065,6 +2132,10 @@
           font-size: 14px;
           line-height: 1.6;
           font-family: var(--font-mono);
+          transition: box-shadow 0.2s;
+        }
+        .daily-review-edit-textarea:focus {
+          box-shadow: inset 0 0 0 2px var(--primary);
         }
         .daily-review-edit-footer {
           padding: 12px 16px;
@@ -2133,6 +2204,10 @@
           color: var(--foreground);
           word-break: break-word;
           margin-bottom: 10px;
+          transition: transform 0.2s;
+        }
+        .daily-review-card-front:hover .daily-review-memo-content {
+          transform: translateY(-1px);
         }
         .daily-review-memo-content p {
           margin: 0 0 0.5em;
@@ -2205,6 +2280,11 @@
           border-radius: 4px;
           font-size: 12px;
           font-weight: 500;
+          transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .daily-review-memo-tag:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
         .daily-review-memo-images {
           display: grid;
@@ -2250,6 +2330,16 @@
         }
         .daily-review-memo-image-link:hover .daily-review-memo-image {
           opacity: 0.9;
+          transform: scale(1.02);
+        }
+        .daily-review-memo-image {
+          width: 100%;
+          height: 160px;
+          object-fit: cover;
+          object-position: center top;
+          display: block;
+          transition: box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
+          cursor: pointer;
         }
 
         #${this.imageOverlayId} {
@@ -2278,6 +2368,13 @@
           flex-direction: column;
           align-items: center;
           margin: auto;
+          transform: scale(0.9);
+          opacity: 0;
+          transition: transform 0.3s, opacity 0.3s;
+        }
+        #${this.imageOverlayId}.visible #${this.imageDialogId} {
+          transform: scale(1);
+          opacity: 1;
         }
         #${this.imagePreviewId} {
           max-width: 100%;
@@ -2286,10 +2383,12 @@
           display: block;
           border-radius: 4px;
           cursor: zoom-in;
+          transition: transform 0.3s ease, opacity 0.2s ease;
         }
         #${this.imagePreviewId}.zoomed {
           cursor: zoom-out;
           max-width: none;
+          transform: scale(1.5);
         }
         #${this.imageCaptionId} {
           margin-top: 12px;
@@ -2351,18 +2450,33 @@
 
         .daily-review-empty {
           text-align: center;
-          padding: 40px 20px;
+          padding: 60px 20px;
           color: var(--muted-foreground);
+          animation: daily-review-fade-in 0.3s ease;
         }
         .daily-review-empty-icon {
-          font-size: 48px;
-          margin-bottom: 12px;
+          font-size: 64px;
+          margin-bottom: 16px;
+          opacity: 0.8;
+        }
+        .daily-review-empty-title {
+          font-size: 16px;
+          font-weight: 600;
+          color: var(--foreground);
+          margin-bottom: 8px;
+        }
+        .daily-review-empty-hint {
+          font-size: 13px;
+          line-height: 1.5;
+          max-width: 320px;
+          margin: 0 auto;
         }
 
         .daily-review-loading {
           text-align: center;
           padding: 40px 20px;
           color: var(--muted-foreground);
+          animation: daily-review-fade-in 0.3s ease;
         }
         .daily-review-loading-spinner {
           width: 32px;
@@ -2372,9 +2486,66 @@
           border-radius: 50%;
           animation: daily-review-spin 0.8s linear infinite;
           margin: 0 auto 12px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        @keyframes daily-review-fade-in {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+        @keyframes daily-review-fade-out {
+          from {
+            opacity: 1;
+          }
+          to {
+            opacity: 0;
+          }
         }
         @keyframes daily-review-spin {
           to { transform: rotate(360deg); }
+        }
+        @keyframes daily-review-slide-in-left {
+          from {
+            transform: translateX(-100%);
+            opacity: 0;
+          }
+          to {
+            transform: translateX(0);
+            opacity: 1;
+          }
+        }
+        @keyframes daily-review-slide-in-right {
+          from {
+            transform: translateX(100%);
+            opacity: 0;
+          }
+          to {
+            transform: translateX(0);
+            opacity: 1;
+          }
+        }
+        @keyframes daily-review-slide-out-left {
+          from {
+            transform: translateX(0);
+            opacity: 1;
+          }
+          to {
+            transform: translateX(-100%);
+            opacity: 0;
+          }
+        }
+        @keyframes daily-review-slide-out-right {
+          from {
+            transform: translateX(0);
+            opacity: 1;
+          }
+          to {
+            transform: translateX(100%);
+            opacity: 0;
+          }
         }
 
         .daily-review-error {
@@ -2416,6 +2587,54 @@
         }
         .daily-review-btn-primary:hover {
           opacity: 0.9;
+        }
+
+        /* Mobile responsive styles */
+        @media (max-width: 640px) {
+          #${this.dialogId} {
+            width: calc(100% - 1rem);
+            height: calc(100vh - 2rem);
+          }
+          .daily-review-header {
+            padding: 12px 16px;
+          }
+          .daily-review-deck {
+            margin: 12px 16px;
+            padding: 14px;
+          }
+          .daily-review-card-front {
+            padding: 14px;
+          }
+          .daily-review-memo-content {
+            font-size: 15px;
+            line-height: 1.65;
+          }
+          .daily-review-counter {
+            font-size: 14px;
+            min-width: 80px;
+          }
+          .daily-review-footer {
+            padding: 10px 16px;
+          }
+          .daily-review-deck-footer {
+            flex-direction: column;
+            gap: 10px;
+          }
+          .daily-review-actions {
+            width: 100%;
+            justify-content: center;
+            gap: 12px;
+          }
+          .daily-review-pager {
+            width: 100%;
+            justify-content: center;
+            gap: 12px;
+          }
+          .daily-review-icon-btn {
+            width: 44px;
+            height: 44px;
+            margin: 2px;
+          }
         }
       `;
       document.head.appendChild(styles);
@@ -2519,7 +2738,7 @@
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
                     </svg>
                   </button>
-                  <button class="daily-review-icon-btn" id="${this.deleteId}" title="${i18n.t('delete_memo')}">
+                  <button class="daily-review-icon-btn delete-btn" id="${this.deleteId}" title="${i18n.t('delete_memo')}">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <polyline points="3 6 5 6 21 6"></polyline>
                       <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
@@ -2686,9 +2905,16 @@
       return textarea ? textarea.value : '';
     },
 
-    setEditStatus(message) {
+    setEditStatus(message, type) {
       const status = document.getElementById(this.editStatusId);
-      if (status) status.textContent = message || '';
+      if (!status) return;
+      status.textContent = message || '';
+      status.classList.remove('success', 'error');
+      if (type === 'success') {
+        status.classList.add('success');
+      } else if (type === 'error') {
+        status.classList.add('error');
+      }
     },
 
     setEditorSaving(isSaving) {
@@ -2696,7 +2922,15 @@
       const save = document.getElementById(this.editSaveId);
       const cancel = document.getElementById(this.editCancelId);
       if (textarea) textarea.disabled = !!isSaving;
-      if (save) save.disabled = !!isSaving;
+      if (save) {
+        save.disabled = !!isSaving;
+        if (isSaving) {
+          save.dataset.originalText = save.textContent;
+          save.textContent = '⏳ ' + (i18n.t('saving') || 'Saving...');
+        } else if (save.dataset.originalText) {
+          save.textContent = save.dataset.originalText;
+        }
+      }
       if (cancel) cancel.disabled = !!isSaving;
     },
 
@@ -2826,9 +3060,11 @@
         `;
       } else if (type === 'empty') {
         state.innerHTML = `
-          <div style="font-size: 22px;">📝</div>
-          <div>${i18n.t('empty_state')}</div>
-          <div style="font-size: 13px;">${i18n.t('empty_hint')}</div>
+          <div class="daily-review-empty">
+            <div class="daily-review-empty-icon">📝</div>
+            <div class="daily-review-empty-title">${i18n.t('empty_state')}</div>
+            <div class="daily-review-empty-hint">${i18n.t('empty_hint')}</div>
+          </div>
         `;
       } else if (type === 'error') {
         state.innerHTML = `<div>${utils.escapeHtml(message || i18n.t('load_failed'))}</div>`;
@@ -2843,6 +3079,14 @@
       const safeIndex = Math.max(0, Math.min(index, deckMemos.length - 1));
       this.setReviewState(null);
       this.renderMemoCard(deckMemos[safeIndex], safeIndex, deckMemos.length);
+
+      // Add fade-in animation for new batch
+      requestAnimationFrame(() => {
+        const cardFront = document.querySelector('.daily-review-card-front');
+        if (cardFront) {
+          cardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
+        }
+      });
     },
 
     renderMemoCard(memo, index, total) {
@@ -2851,6 +3095,9 @@
       const prev = document.getElementById(this.prevId);
       const next = document.getElementById(this.nextId);
       if (!card) return;
+
+      // Clean up any leftover animation classes
+      card.style.animation = '';
 
       const createTime = utils.toTimeMs(memo.createTime, Date.now());
       const rawContent = memo.content || '';
@@ -2907,7 +3154,20 @@
       // Reset scroll position when switching cards.
       card.scrollTop = 0;
 
-      if (counter) counter.textContent = `${index + 1} / ${total}`;
+      if (counter) {
+        counter.textContent = `${index + 1} / ${total}`;
+        // Animate counter change
+        counter.style.animation = 'none';
+        requestAnimationFrame(() => {
+          counter.style.animation = '';
+          counter.style.transform = 'scale(1.1)';
+          counter.style.opacity = '0.7';
+          setTimeout(() => {
+            counter.style.transform = 'scale(1)';
+            counter.style.opacity = '1';
+          }, 50);
+        });
+      }
       if (prev) prev.disabled = index <= 0;
       if (next) next.disabled = index >= total - 1;
 
@@ -2984,15 +3244,24 @@
       if (images.length === 0) return;
       const nextIndex = this.activeImageIndex + step;
       if (nextIndex < 0 || nextIndex >= images.length) return;
-      this.activeImageIndex = nextIndex;
 
-      // Reset zoom when navigating
+      // Add fade-out transition
       const img = document.getElementById(this.imagePreviewId);
       if (img) {
+        img.style.opacity = '0';
         img.classList.remove('zoomed');
       }
 
-      this.updateImagePreview();
+      // Wait for fade-out, then update
+      setTimeout(() => {
+        this.activeImageIndex = nextIndex;
+        this.updateImagePreview();
+
+        // Fade back in
+        if (img) {
+          img.style.opacity = '1';
+        }
+      }, 200);
     },
 
     updateImagePreview() {
@@ -3034,6 +3303,7 @@
     isSavingEdit: false,
     keydownHandler: null,
     loadingTimer: null,
+    animationInProgress: false,
 
     init() {
       try {
@@ -3199,6 +3469,16 @@
     },
 
     async newBatch() {
+      const refreshBtn = document.getElementById(ui.refreshId);
+      if (refreshBtn) {
+        refreshBtn.disabled = true;
+        // Add rotation animation to shuffle button
+        const svg = refreshBtn.querySelector('svg');
+        if (svg) {
+          svg.style.animation = 'daily-review-spin 0.8s linear infinite';
+        }
+      }
+
       this.deckBatch += 1;
       // Save batch state to localStorage
       batchService.save(this.deckBatch);
@@ -3210,6 +3490,14 @@
       } catch (error) {
         console.error('Failed to generate new batch:', error);
         ui.setReviewState('error', i18n.t('load_failed'));
+      } finally {
+        if (refreshBtn) {
+          refreshBtn.disabled = false;
+          const svg = refreshBtn.querySelector('svg');
+          if (svg) {
+            svg.style.animation = '';
+          }
+        }
       }
     },
 
@@ -3221,7 +3509,29 @@
       if (!confirm(i18n.t('delete_confirm'))) return;
 
       const delBtn = document.getElementById(ui.deleteId);
-      if (delBtn) delBtn.disabled = true;
+      if (delBtn) {
+        delBtn.disabled = true;
+        // Add loading state to delete button
+        const originalHTML = delBtn.innerHTML;
+        delBtn.innerHTML = `
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" opacity="0.25"></circle>
+            <path d="M12 2 A10 10 0 0 1 22 12" stroke-linecap="round">
+              <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/>
+            </path>
+          </svg>
+        `;
+        delBtn.dataset.originalHTML = originalHTML;
+      }
+
+      // Add fade-out animation before deletion
+      const cardFront = document.querySelector('.daily-review-card-front');
+      if (cardFront) {
+        cardFront.style.animation = 'daily-review-fade-out 0.3s ease-out forwards';
+      }
+
+      // Wait for animation to complete
+      await new Promise(resolve => setTimeout(resolve, 300));
 
       try {
         await apiService.deleteMemo(memo.name);
@@ -3243,6 +3553,14 @@
         // Clear deck cache to ensure deleted memo doesn't appear in future decks
         deckService.clear();
 
+        // Restore delete button state after successful deletion
+        if (delBtn) {
+          delBtn.disabled = false;
+          if (delBtn.dataset.originalHTML) {
+            delBtn.innerHTML = delBtn.dataset.originalHTML;
+          }
+        }
+
         if (this.deckMemos.length === 0) {
           ui.renderDeck([], 0);
           return;
@@ -3253,10 +3571,25 @@
           this.deckIndex = this.deckMemos.length - 1;
         }
         ui.renderDeck(this.deckMemos, this.deckIndex);
+
+        // Add fade-in animation for new card
+        requestAnimationFrame(() => {
+          const newCardFront = document.querySelector('.daily-review-card-front');
+          if (newCardFront) {
+            newCardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
+          }
+        });
       } catch (e) {
         console.error('Failed to delete memo:', e);
         alert(i18n.t('delete_failed'));
-        if (delBtn) delBtn.disabled = false;
+        if (delBtn) {
+          delBtn.disabled = false;
+          if (delBtn.dataset.originalHTML) {
+            delBtn.innerHTML = delBtn.dataset.originalHTML;
+          }
+        }
+        // Re-render to restore the card
+        ui.renderDeck(this.deckMemos, this.deckIndex);
       }
     },
 
@@ -3325,16 +3658,17 @@
         }
 
         ui.renderDeck(this.deckMemos, this.deckIndex);
-        ui.closeEditor();
+        ui.setEditStatus(i18n.t('save_success') || '✓ Saved', 'success');
+        setTimeout(() => ui.closeEditor(), 500);
       } catch (e) {
         console.error('Failed to update memo:', e);
         const msg = String(e && e.message ? e.message : e);
         if (msg.includes('401') || msg.includes('Unauthenticated') || msg.includes('authentication')) {
-          ui.setEditStatus(i18n.t('save_failed_auth'));
+          ui.setEditStatus(i18n.t('save_failed_auth'), 'error');
         } else if (msg.includes('403') || msg.includes('PermissionDenied') || msg.includes('permission')) {
-          ui.setEditStatus(i18n.t('save_failed_permission'));
+          ui.setEditStatus(i18n.t('save_failed_permission'), 'error');
         } else {
-          ui.setEditStatus(i18n.t('save_failed_retry'));
+          ui.setEditStatus(i18n.t('save_failed_retry'), 'error');
         }
       } finally {
         this.isSavingEdit = false;
@@ -3345,17 +3679,79 @@
     prev() {
       if (!this.deckMemos.length) return;
       if (this.deckIndex <= 0) return;
-      this.deckIndex -= 1;
-      ui.renderDeck(this.deckMemos, this.deckIndex);
-      this.markViewedCurrent();
+      if (this.animationInProgress) return;
+
+      this.animationInProgress = true;
+      const cardFront = document.querySelector('.daily-review-card-front');
+      if (!cardFront) {
+        this.deckIndex -= 1;
+        ui.renderDeck(this.deckMemos, this.deckIndex);
+        this.markViewedCurrent();
+        this.animationInProgress = false;
+        return;
+      }
+
+      // Add exit animation (slide out right)
+      cardFront.style.animation = 'daily-review-slide-out-right 0.2s ease-out forwards';
+
+      setTimeout(() => {
+        this.deckIndex -= 1;
+        ui.renderDeck(this.deckMemos, this.deckIndex);
+        this.markViewedCurrent();
+
+        // Add entrance animation (slide in from left)
+        requestAnimationFrame(() => {
+          const newCardFront = document.querySelector('.daily-review-card-front');
+          if (newCardFront) {
+            newCardFront.style.animation = 'daily-review-slide-in-left 0.2s ease-out forwards';
+            setTimeout(() => {
+              newCardFront.style.animation = '';
+              this.animationInProgress = false;
+            }, 200);
+          } else {
+            this.animationInProgress = false;
+          }
+        });
+      }, 200);
     },
 
     next() {
       if (!this.deckMemos.length) return;
       if (this.deckIndex >= this.deckMemos.length - 1) return;
-      this.deckIndex += 1;
-      ui.renderDeck(this.deckMemos, this.deckIndex);
-      this.markViewedCurrent();
+      if (this.animationInProgress) return;
+
+      this.animationInProgress = true;
+      const cardFront = document.querySelector('.daily-review-card-front');
+      if (!cardFront) {
+        this.deckIndex += 1;
+        ui.renderDeck(this.deckMemos, this.deckIndex);
+        this.markViewedCurrent();
+        this.animationInProgress = false;
+        return;
+      }
+
+      // Add exit animation (slide out left)
+      cardFront.style.animation = 'daily-review-slide-out-left 0.2s ease-out forwards';
+
+      setTimeout(() => {
+        this.deckIndex += 1;
+        ui.renderDeck(this.deckMemos, this.deckIndex);
+        this.markViewedCurrent();
+
+        // Add entrance animation (slide in from right)
+        requestAnimationFrame(() => {
+          const newCardFront = document.querySelector('.daily-review-card-front');
+          if (newCardFront) {
+            newCardFront.style.animation = 'daily-review-slide-in-right 0.2s ease-out forwards';
+            setTimeout(() => {
+              newCardFront.style.animation = '';
+              this.animationInProgress = false;
+            }, 200);
+          } else {
+            this.animationInProgress = false;
+          }
+        });
+      }, 200);
     },
 
     markViewedCurrent() {
