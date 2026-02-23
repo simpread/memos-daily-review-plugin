@@ -3025,7 +3025,7 @@
       }
     },
 
-    renderDeck(deckMemos, index) {
+    renderDeck(deckMemos, index, skipAnimation) {
       if (!Array.isArray(deckMemos) || deckMemos.length === 0) {
         this.setReviewState('empty');
         return;
@@ -3033,6 +3033,16 @@
       const safeIndex = Math.max(0, Math.min(index, deckMemos.length - 1));
       this.setReviewState(null);
       this.renderMemoCard(deckMemos[safeIndex], safeIndex, deckMemos.length);
+
+      // Add fade-in animation for new batch (unless skipped)
+      if (!skipAnimation) {
+        requestAnimationFrame(() => {
+          const cardFront = document.querySelector('.daily-review-card-front');
+          if (cardFront) {
+            cardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
+          }
+        });
+      }
     },
 
     renderMemoCard(memo, index, total) {
@@ -3406,6 +3416,16 @@
     },
 
     async newBatch() {
+      const refreshBtn = document.getElementById(ui.refreshId);
+      if (refreshBtn) {
+        refreshBtn.disabled = true;
+        // Add rotation animation to shuffle button
+        const svg = refreshBtn.querySelector('svg');
+        if (svg) {
+          svg.style.animation = 'daily-review-spin 0.8s linear infinite';
+        }
+      }
+
       this.deckBatch += 1;
       // Save batch state to localStorage
       batchService.save(this.deckBatch);
@@ -3417,6 +3437,14 @@
       } catch (error) {
         console.error('Failed to generate new batch:', error);
         ui.setReviewState('error', i18n.t('load_failed'));
+      } finally {
+        if (refreshBtn) {
+          refreshBtn.disabled = false;
+          const svg = refreshBtn.querySelector('svg');
+          if (svg) {
+            svg.style.animation = '';
+          }
+        }
       }
     },
 
