@@ -2452,6 +2452,14 @@
             opacity: 1;
           }
         }
+        @keyframes daily-review-fade-out {
+          from {
+            opacity: 1;
+          }
+          to {
+            opacity: 0;
+          }
+        }
         @keyframes daily-review-spin {
           to { transform: rotate(360deg); }
         }
@@ -3420,7 +3428,29 @@
       if (!confirm(i18n.t('delete_confirm'))) return;
 
       const delBtn = document.getElementById(ui.deleteId);
-      if (delBtn) delBtn.disabled = true;
+      if (delBtn) {
+        delBtn.disabled = true;
+        // Add loading state to delete button
+        const originalHTML = delBtn.innerHTML;
+        delBtn.innerHTML = `
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" opacity="0.25"></circle>
+            <path d="M12 2 A10 10 0 0 1 22 12" stroke-linecap="round">
+              <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/>
+            </path>
+          </svg>
+        `;
+        delBtn.dataset.originalHTML = originalHTML;
+      }
+
+      // Add fade-out animation before deletion
+      const cardFront = document.querySelector('.daily-review-card-front');
+      if (cardFront) {
+        cardFront.style.animation = 'daily-review-fade-out 0.3s ease-out forwards';
+      }
+
+      // Wait for animation to complete
+      await new Promise(resolve => setTimeout(resolve, 300));
 
       try {
         await apiService.deleteMemo(memo.name);
@@ -3452,10 +3482,25 @@
           this.deckIndex = this.deckMemos.length - 1;
         }
         ui.renderDeck(this.deckMemos, this.deckIndex);
+
+        // Add fade-in animation for new card
+        requestAnimationFrame(() => {
+          const newCardFront = document.querySelector('.daily-review-card-front');
+          if (newCardFront) {
+            newCardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
+          }
+        });
       } catch (e) {
         console.error('Failed to delete memo:', e);
         alert(i18n.t('delete_failed'));
-        if (delBtn) delBtn.disabled = false;
+        if (delBtn) {
+          delBtn.disabled = false;
+          if (delBtn.dataset.originalHTML) {
+            delBtn.innerHTML = delBtn.dataset.originalHTML;
+          }
+        }
+        // Re-render to restore the card
+        ui.renderDeck(this.deckMemos, this.deckIndex);
       }
     },
 
