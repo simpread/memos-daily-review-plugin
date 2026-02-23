@@ -3553,6 +3553,14 @@
         // Clear deck cache to ensure deleted memo doesn't appear in future decks
         deckService.clear();
 
+        // Restore delete button state after successful deletion
+        if (delBtn) {
+          delBtn.disabled = false;
+          if (delBtn.dataset.originalHTML) {
+            delBtn.innerHTML = delBtn.dataset.originalHTML;
+          }
+        }
+
         if (this.deckMemos.length === 0) {
           ui.renderDeck([], 0);
           return;
