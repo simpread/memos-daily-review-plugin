@@ -22,9 +22,10 @@
 
 ## 核心功能
 
-- **一键回顾** - 可以回顾最近 1 个月到 1 年内的 Memo
+- **一键回顾** - 可以回顾最近 1 个月到全部时间范围内的 Memo
 - **每天不重样** - 今天看到的，明天就换了
 - **智能推荐** - 越久没看的越容易出现
+- **版本兼容** - 自动适配不同 Memos 版本的 API 差异
 - **键盘快捷键** - 方向键切换卡片，Esc 关闭，Ctrl+Enter 保存
 
 ---
@@ -34,6 +35,19 @@
 1. 打开 Memos：`设置 → 系统 → 自定义脚本`
 2. 复制 [`memos-daily-review-plugin.js`](../../memos-daily-review-plugin.js) 的全部内容并粘贴
 3. 保存后刷新页面，右下角会出现「每日回顾」按钮
+
+---
+
+## 兼容性说明
+
+- **已验证基线**：Memos `v0.25.3`
+- **前向兼容目标**：Memos `v0.26.x+`
+- **自适应 API 策略**：
+  - 自动探测可用的 auth/session 端点
+  - 自动回退 `updateMask` / `update_mask` 两种参数风格
+  - 当 `filter` 或 `orderBy` 不被支持时自动降级
+  - 同时兼容 `nextPageToken` 与 `next_page_token` 返回字段
+- **能力缓存键**：`localStorage` 中的 `memos-daily-review-capabilities`（带 TTL 自动刷新）
 
 ---
 
