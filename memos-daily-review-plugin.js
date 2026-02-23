@@ -47,7 +47,13 @@
     API_PAGE_SIZE: 1000,
     API_MEMO_ORDER_BY: 'create_time desc',
     POOL_TTL_MS: 6 * 60 * 60 * 1000,
-    POOL_MAX_PAGES_ALL: 2,
+    POOL_MAX_PAGES_ALL: 6,
+    POOL_MAX_PAGES_SCOPED: 3,
+    POOL_TARGET_MULTIPLIER: 6,
+    POOL_MIN_TARGET_ALL: 300,
+    POOL_MIN_TARGET_SCOPED: 120,
+    BUCKET_NEWEST_DAYS: 30,
+    BUCKET_MIDDLE_DAYS: 180,
     CAPABILITY_TTL_MS: 24 * 60 * 60 * 1000,
     REFRESH_RETRY_COOLDOWN_MS: 15 * 60 * 1000,
     NO_REPEAT_DAYS: 3,
@@ -3352,9 +3358,19 @@
       historyService.markViewed(memoId, utils.getDailySeed());
     },
 
-    async getPoolMemos(timeRange) {
+    estimateDesiredPoolSize(timeRange, dailyCount) {
+      const count = Number.isFinite(dailyCount) ? Math.max(1, Math.floor(dailyCount)) : CONFIG.DEFAULT_COUNT;
+      const minTarget = timeRange === 'all' ? CONFIG.POOL_MIN_TARGET_ALL : CONFIG.POOL_MIN_TARGET_SCOPED;
+      return Math.max(count * CONFIG.POOL_TARGET_MULTIPLIER, minTarget);
+    },
+
+    async getPoolMemos(timeRange, desiredPoolSize) {
+      const desiredSize = Number.isFinite(desiredPoolSize) && desiredPoolSize > 0
+        ? Math.floor(desiredPoolSize)
+        : this.estimateDesiredPoolSize(timeRange, CONFIG.DEFAULT_COUNT);
+      const maxPages = timeRange === 'all' ? CONFIG.POOL_MAX_PAGES_ALL : CONFIG.POOL_MAX_PAGES_SCOPED;
       const cached = poolService.load(timeRange);
-      if (cached && cached.length > 0) return cached;
+      if (cached && cached.length >= desiredSize) return cached;
 
       const normalized = [];
       const seen = new Set();
@@ -3379,9 +3395,8 @@
       }
 
       let nextPageToken = first.nextPageToken;
-      const maxPages = timeRange === 'all' ? CONFIG.POOL_MAX_PAGES_ALL : 1;
       let currentPage = 1;
-      while (nextPageToken && currentPage < maxPages) {
+      while (nextPageToken && currentPage < maxPages && normalized.length < desiredSize) {
         try {
           const next = await apiService.fetchMemos(timeRange, nextPageToken);
           for (const memo of next.memos || []) {
@@ -3405,16 +3420,22 @@
     },
 
     buildBuckets(pool) {
-      const sorted = [...pool].sort((a, b) => {
-        const ta = utils.toTimeMs(a.createTime, 0);
-        const tb = utils.toTimeMs(b.createTime, 0);
-        return ta - tb;
-      });
-      if (sorted.length === 0) return [[], [], []];
-      const third = Math.ceil(sorted.length / 3);
-      const oldest = sorted.slice(0, third);
-      const middle = sorted.slice(third, third * 2);
-      const newest = sorted.slice(third * 2);
+      const nowMs = Date.now();
+      const dayMs = 24 * 60 * 60 * 1000;
+      const oldest = [];
+      const middle = [];
+      const newest = [];
+      for (const memo of pool || []) {
+        const createMs = utils.toTimeMs(memo?.createTime, 0);
+        const ageDays = Math.floor((nowMs - createMs) / dayMs);
+        if (ageDays > CONFIG.BUCKET_MIDDLE_DAYS) {
+          oldest.push(memo);
+        } else if (ageDays > CONFIG.BUCKET_NEWEST_DAYS) {
+          middle.push(memo);
+        } else {
+          newest.push(memo);
+        }
+      }
       return [oldest, middle, newest];
     },
 
@@ -3563,6 +3584,19 @@
         });
       }
 
+      if (deck.length < settings.count) {
+        const seen = new Set(deck.filter((m) => m?.id).map((m) => m.id));
+        const fallback = this.scoreByReviewPriority(eligible, history, today, `${seedPrefix}-fill`);
+        for (const item of fallback) {
+          if (deck.length >= settings.count) break;
+          const memo = item.memo;
+          if (!memo?.id) continue;
+          if (seen.has(memo.id)) continue;
+          seen.add(memo.id);
+          deck.push(memo);
+        }
+      }
+
       return deck.slice(0, settings.count);
     },
 
@@ -3586,7 +3620,8 @@
       ui.setReviewState('loading');
 
       try {
-        const pool = await this.getPoolMemos(settings.timeRange);
+        const desiredPoolSize = this.estimateDesiredPoolSize(settings.timeRange, settings.count);
+        const pool = await this.getPoolMemos(settings.timeRange, desiredPoolSize);
         const deckMemos = this.buildDeckFromPool(pool, settings, today, this.deckBatch);
 
         if (deckMemos.length === 0) {
@@ -3638,6 +3673,19 @@
   // ============================================
   // Entry Point
   // ============================================
+  if (typeof globalThis !== 'undefined' && globalThis.__DAILY_REVIEW_TEST_MODE) {
+    globalThis.__DAILY_REVIEW_TEST_HOOKS = {
+      CONFIG,
+      utils,
+      historyService,
+      poolService,
+      apiService,
+      controller,
+      capabilityService
+    };
+    return;
+  }
+
   // Initialize i18n
   i18n.init();
 
