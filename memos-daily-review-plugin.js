@@ -1060,16 +1060,20 @@
     bindToElement(element) {
       if (!element) return;
 
-      const text = element.getAttribute('title') || element.getAttribute('aria-label');
-      if (!text) return;
+      // Check if already bound to avoid duplicate registration
+      if (element.dataset.tooltipBound === 'true') return;
+      element.dataset.tooltipBound = 'true';
 
-      // Remove title to prevent native tooltip
-      element.removeAttribute('title');
-      element.dataset.tooltipText = text;
+      // Store initial text but don't remove title yet
+      const initialText = element.getAttribute('title') || element.getAttribute('aria-label');
+      if (!initialText) return;
 
-      // Mouse events (desktop)
+      element.dataset.tooltipText = initialText;
+
+      // Mouse events (desktop) - read text dynamically
       cleanupService.register('tooltips', element, 'mouseenter', () => {
-        this.show(element, text);
+        const text = element.dataset.tooltipText || element.getAttribute('aria-label');
+        if (text) this.show(element, text);
       });
 
       cleanupService.register('tooltips', element, 'mouseleave', () => {
@@ -1080,10 +1084,13 @@
       cleanupService.register('tooltips', element, 'touchstart', (e) => {
         // Long press 500ms to show tooltip
         this.touchTimer = setTimeout(() => {
-          this.show(element, text, 0);
-          // Haptic feedback if supported
-          if (navigator.vibrate) {
-            navigator.vibrate(10);
+          const text = element.dataset.tooltipText || element.getAttribute('aria-label');
+          if (text) {
+            this.show(element, text, 0);
+            // Haptic feedback if supported
+            if (navigator.vibrate) {
+              navigator.vibrate(10);
+            }
           }
         }, 500);
       });
@@ -1103,7 +1110,8 @@
 
       // Focus events (keyboard navigation)
       cleanupService.register('tooltips', element, 'focus', () => {
-        this.show(element, text, 300);
+        const text = element.dataset.tooltipText || element.getAttribute('aria-label');
+        if (text) this.show(element, text, 300);
       });
 
       cleanupService.register('tooltips', element, 'blur', () => {
@@ -1112,6 +1120,14 @@
     },
 
     bindAll() {
+      // Clean up old bindings first to avoid duplicates
+      cleanupService.unregister('tooltips');
+
+      // Clear bound markers
+      document.querySelectorAll('[data-tooltip-bound]').forEach(el => {
+        delete el.dataset.tooltipBound;
+      });
+
       // Bind all icon buttons
       const selectors = [
         '.daily-review-icon-btn',
@@ -1255,7 +1271,8 @@
     prune(history) {
       if (!history || !history.items || typeof history.items !== 'object') return history;
       const ids = Object.keys(history.items);
-      if (ids.length <= CONFIG.HISTORY_MAX_ITEMS) return history;
+      // Use HISTORY_SOFT_LIMIT as the threshold for pruning
+      if (ids.length <= CONFIG.HISTORY_SOFT_LIMIT) return history;
 
       const entries = ids
         .map((id) => {
@@ -2863,9 +2880,17 @@
            Reduced Motion Support
            ============================================ */
         @media (prefers-reduced-motion: reduce) {
-          *,
-          *::before,
-          *::after {
+          /* Scope to plugin elements only */
+          #${this.buttonId},
+          #${this.buttonId} *,
+          #${this.overlayId},
+          #${this.overlayId} *,
+          #${this.dialogId},
+          #${this.dialogId} *,
+          #${this.editOverlayId},
+          #${this.editOverlayId} *,
+          #${this.imageOverlayId},
+          #${this.imageOverlayId} * {
             animation-duration: 0.01ms !important;
             animation-iteration-count: 1 !important;
             transition-duration: 0.01ms !important;
@@ -3065,8 +3090,7 @@
         <h2 id="daily-review-dialog-title" class="sr-only">${i18n.t('daily_review')}</h2>
         <div class="daily-review-header">
           <h2 class="daily-review-title" aria-hidden="true">${i18n.t('daily_review')}</h2>
-          <button class="daily-review-close" title="${i18n.t('close')}" aria-label="${i18n.t('close')}">
-          <button class="daily-review-close" title="${i18n.t('close')}" aria-label="${i18n.t('close')}">
+          <button class="daily-review-close" id="daily-review-header-close" title="${i18n.t('close')}" aria-label="${i18n.t('close')}">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -3164,7 +3188,7 @@
       // Bind events using cleanupService
       const closeHandler = () => controller.closeDialog();
       cleanupService.register('dialog', overlay, 'click', closeHandler);
-      cleanupService.register('dialog', dialog.querySelector('.daily-review-close'), 'click', closeHandler);
+      cleanupService.register('dialog', dialog.querySelector('#daily-review-header-close'), 'click', closeHandler);
       cleanupService.register('dialog', dialog.querySelector('#daily-review-close-btn'), 'click', closeHandler);
       cleanupService.register('dialog', dialog.querySelector(`#${this.refreshId}`), 'click',
         () => controller.newBatch().catch(err => console.error('Failed to generate new batch:', err)));
@@ -3842,6 +3866,9 @@
       }
 
       this.isOpen = true;
+      // Rebind keyboard shortcuts when opening dialog
+      this.bindKeyboardShortcuts();
+
       // Load batch state from localStorage (persists across dialog open/close)
       this.deckBatch = batchService.load();
       this.deckIndex = 0;
@@ -3862,8 +3889,8 @@
       ui.closeEditor();
       ui.closeImagePreview();
       ui.hideDialog();
-      // Clean up keyboard listener
-      cleanupService.unregister('keyboard');
+      // Note: Keep keyboard listener registered but guarded by isOpen check
+      // This avoids rebinding issues and the isOpen check prevents execution when closed
     },
 
     patchRouteEvents() {
