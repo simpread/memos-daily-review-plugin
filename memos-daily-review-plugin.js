@@ -136,6 +136,10 @@
         'load_failed': '加载失败，请检查网络连接或登录状态',
         'offline_notice': '网络连接已断开',
         'offline_error': '无法加载：网络连接已断开',
+        'error_network': '网络错误，请检查连接',
+        'error_server': '服务器错误，请稍后重试',
+        'error_permission': '权限不足',
+        'error_not_found': '内容未找到',
         'edit_not_supported': '当前 Memo 不支持编辑',
         'saving': '保存中…',
         'save_failed_auth': '保存失败：需要登录或无权限',
@@ -188,6 +192,10 @@
         'load_failed': 'Failed to load. Please check your network or login status',
         'offline_notice': 'You are offline',
         'offline_error': 'Cannot load: No network connection',
+        'error_network': 'Network error, please check connection',
+        'error_server': 'Server error, please try again later',
+        'error_permission': 'Permission denied',
+        'error_not_found': 'Content not found',
         'edit_not_supported': 'This memo cannot be edited',
         'saving': 'Saving...',
         'save_failed_auth': 'Save failed: Login required',
@@ -663,6 +671,54 @@
   };
 
   // ============================================
+  // Retry Utils (Exponential backoff for API calls)
+  // ============================================
+  const retryUtils = {
+    async withRetry(fn, options = {}) {
+      const maxAttempts = options.maxAttempts || 3;
+      const initialDelay = options.initialDelay || 1000;
+      const maxDelay = options.maxDelay || 5000;
+      const backoffFactor = options.backoffFactor || 2;
+
+      let lastError = null;
+      let delay = initialDelay;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          return await fn();
+        } catch (error) {
+          lastError = error;
+
+          // Don't retry on offline errors
+          if (error.message && error.message.includes('OFFLINE')) {
+            throw error;
+          }
+
+          // Don't retry on 4xx errors (except 401 which is handled by auth service)
+          if (error.message && /API error: 4[0-9]{2}/.test(error.message)) {
+            const status = parseInt(error.message.match(/\d{3}/)?.[0] || '0', 10);
+            if (status !== 401) {
+              throw error;
+            }
+          }
+
+          // Last attempt - throw error
+          if (attempt === maxAttempts) {
+            throw error;
+          }
+
+          // Wait before retry with exponential backoff
+          console.log(`Retry attempt ${attempt}/${maxAttempts} after ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay = Math.min(delay * backoffFactor, maxDelay);
+        }
+      }
+
+      throw lastError;
+    }
+  };
+
+  // ============================================
   // Storage Utils (Safe localStorage operations)
   // ============================================
   const storageUtils = {
@@ -1040,7 +1096,8 @@
         params.append('pageToken', pageToken);
       }
 
-      try {
+      // Wrap in retry logic
+      return await retryUtils.withRetry(async () => {
         const doFetch = async () => {
           const headers = { 'Accept': 'application/json', ...authService.getAuthHeaders() };
           return await utils.fetchWithTimeout(
@@ -1066,10 +1123,7 @@
           throw new Error('Invalid API response format');
         }
         return { memos: data.memos || [], nextPageToken: data.nextPageToken || data.next_page_token || '' };
-      } catch (e) {
-        console.error('Failed to fetch memos:', e);
-        throw e;
-      }
+      }, { maxAttempts: 3, initialDelay: 1000 });
     },
 
     async updateMemoContent(memoName, content) {
@@ -3186,12 +3240,23 @@
         this.markViewedCurrent();
       } catch (error) {
         console.error('Failed to load daily review deck:', error);
-        // Check if error is due to offline status
+
+        // Determine specific error message based on error type
+        let errorMessage = i18n.t('load_failed');
+
         if (error.message && error.message.includes('OFFLINE')) {
-          ui.setReviewState('error', i18n.t('offline_error'));
-        } else {
-          ui.setReviewState('error', i18n.t('load_failed'));
+          errorMessage = i18n.t('offline_error');
+        } else if (error.message && /API error: 5[0-9]{2}/.test(error.message)) {
+          errorMessage = i18n.t('error_server');
+        } else if (error.message && /API error: 403/.test(error.message)) {
+          errorMessage = i18n.t('error_permission');
+        } else if (error.message && /API error: 404/.test(error.message)) {
+          errorMessage = i18n.t('error_not_found');
+        } else if (error.message && error.message.includes('network') || error.message && error.message.includes('fetch')) {
+          errorMessage = i18n.t('error_network');
         }
+
+        ui.setReviewState('error', errorMessage);
       }
     }
   };
