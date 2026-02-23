@@ -3151,18 +3151,6 @@
     closeDialog() {
       if (!this.isOpen) return;
       this.isOpen = false;
-
-      // Clean up event listener to prevent memory leak
-      if (this.keydownHandler) {
-        document.removeEventListener('keydown', this.keydownHandler);
-      }
-
-      // Clean up loading timer
-      if (this.loadingTimer) {
-        clearTimeout(this.loadingTimer);
-        this.loadingTimer = null;
-      }
-
       ui.closeEditor();
       ui.closeImagePreview();
       ui.hideDialog();
