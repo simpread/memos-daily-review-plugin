@@ -52,8 +52,17 @@
     POOL_TARGET_MULTIPLIER: 6,
     POOL_MIN_TARGET_ALL: 300,
     POOL_MIN_TARGET_SCOPED: 120,
+    POOL_FETCH_TIME_BUDGET_MS: 4000,
+    POOL_LOW_YIELD_MAX_STREAK: 2,
+    POOL_MIN_NEW_PER_PAGE: 8,
+    POOL_EARLY_STOP_MIN_RATIO: 0.5,
     BUCKET_NEWEST_DAYS: 30,
     BUCKET_MIDDLE_DAYS: 180,
+    DIVERSITY_PENALTY_ENABLED: true,
+    DIVERSITY_LOOKBACK: 4,
+    DIVERSITY_CANDIDATE_WINDOW: 24,
+    DIVERSITY_TAG_WEIGHT: 6,
+    DIVERSITY_TIME_BUCKET_WEIGHT: 1,
     CAPABILITY_TTL_MS: 24 * 60 * 60 * 1000,
     REFRESH_RETRY_COOLDOWN_MS: 15 * 60 * 1000,
     NO_REPEAT_DAYS: 3,
@@ -3384,6 +3393,7 @@
         const createMs = utils.toTimeMs(memo.createTime, 0);
         return createMs >= startTimeMs;
       };
+      const startedAt = Date.now();
 
       const first = await apiService.fetchMemos(timeRange);
       for (const memo of first.memos || []) {
@@ -3396,8 +3406,11 @@
 
       let nextPageToken = first.nextPageToken;
       let currentPage = 1;
+      let lowYieldStreak = 0;
+      const canEarlyStop = () => normalized.length >= Math.max(1, Math.floor(desiredSize * CONFIG.POOL_EARLY_STOP_MIN_RATIO));
       while (nextPageToken && currentPage < maxPages && normalized.length < desiredSize) {
         try {
+          const beforeCount = normalized.length;
           const next = await apiService.fetchMemos(timeRange, nextPageToken);
           for (const memo of next.memos || []) {
             const m = utils.normalizeMemo(memo);
@@ -3406,8 +3419,22 @@
             seen.add(m.id);
             normalized.push(m);
           }
+          const addedThisPage = normalized.length - beforeCount;
+          if (addedThisPage < CONFIG.POOL_MIN_NEW_PER_PAGE) {
+            lowYieldStreak += 1;
+          } else {
+            lowYieldStreak = 0;
+          }
           nextPageToken = next.nextPageToken;
           currentPage += 1;
+
+          const elapsedMs = Date.now() - startedAt;
+          if (canEarlyStop() && elapsedMs >= CONFIG.POOL_FETCH_TIME_BUDGET_MS) {
+            break;
+          }
+          if (canEarlyStop() && lowYieldStreak >= CONFIG.POOL_LOW_YIELD_MAX_STREAK) {
+            break;
+          }
         } catch (e) {
           // Best-effort additional pages; ignore failures to keep load low and UX resilient.
           console.warn('Failed to fetch additional memo page for pool:', e);
@@ -3472,6 +3499,44 @@
       return scored;
     },
 
+    getMemoTimeBucketKey(memo) {
+      const ts = utils.toTimeMs(memo?.createTime, 0);
+      if (!ts) return 'unknown';
+      const d = new Date(ts);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    },
+
+    getDiversityPenalty(memo, picked) {
+      if (!CONFIG.DIVERSITY_PENALTY_ENABLED) return 0;
+      if (!memo || !Array.isArray(picked) || picked.length === 0) return 0;
+
+      const currentTags = new Set(Array.isArray(memo.tags) ? memo.tags.filter(Boolean) : []);
+      const currentBucket = this.getMemoTimeBucketKey(memo);
+      const lookback = picked.slice(-CONFIG.DIVERSITY_LOOKBACK);
+      let penalty = 0;
+
+      for (let i = lookback.length - 1, rank = 1; i >= 0; i--, rank++) {
+        const prior = lookback[i];
+        if (!prior) continue;
+
+        if (currentTags.size > 0) {
+          const priorTags = Array.isArray(prior.tags) ? prior.tags : [];
+          for (const tag of priorTags) {
+            if (currentTags.has(tag)) {
+              penalty += CONFIG.DIVERSITY_TAG_WEIGHT * rank;
+              break;
+            }
+          }
+        }
+
+        if (currentBucket !== 'unknown' && this.getMemoTimeBucketKey(prior) === currentBucket) {
+          penalty += CONFIG.DIVERSITY_TIME_BUCKET_WEIGHT * rank;
+        }
+      }
+
+      return penalty;
+    },
+
     pickFromBucket(bucket, target, history, today, seedPrefix) {
       if (target <= 0) return [];
       const relax = [CONFIG.NO_REPEAT_DAYS, 2, 1, 0];
@@ -3480,11 +3545,28 @@
       const pickedIds = new Set();
       for (const minDays of relax) {
         if (picked.length >= target) break;
-        for (const item of scored) {
-          if (picked.length >= target) break;
-          if (item.daysSince < minDays) continue;
-          const memo = item.memo;
-          if (pickedIds.has(memo.id)) continue;
+        while (picked.length < target) {
+          const available = scored.filter((item) => item.daysSince >= minDays && item.memo?.id && !pickedIds.has(item.memo.id));
+          if (available.length === 0) break;
+
+          let chosen = available[0];
+          if (CONFIG.DIVERSITY_PENALTY_ENABLED) {
+            const windowSize = Math.min(CONFIG.DIVERSITY_CANDIDATE_WINDOW, available.length);
+            let best = null;
+            for (let i = 0; i < windowSize; i++) {
+              const candidate = available[i];
+              const penalty = this.getDiversityPenalty(candidate.memo, picked);
+              if (!best || penalty < best.penalty || (penalty === best.penalty && i < best.index)) {
+                best = { penalty, index: i, item: candidate };
+              }
+            }
+            if (best && best.item) {
+              chosen = best.item;
+            }
+          }
+
+          const memo = chosen.memo;
+          if (!memo?.id) break;
           pickedIds.add(memo.id);
           picked.push(memo);
         }
