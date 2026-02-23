@@ -2036,6 +2036,25 @@
           border-color: rgba(239, 68, 68, 0.5);
           background-color: rgba(239, 68, 68, 0.05);
         }
+        .daily-review-icon-btn[title]::after {
+          content: attr(title);
+          position: absolute;
+          bottom: -32px;
+          left: 50%;
+          transform: translateX(-50%);
+          padding: 4px 8px;
+          background-color: rgba(0, 0, 0, 0.8);
+          color: white;
+          font-size: 11px;
+          border-radius: 4px;
+          white-space: nowrap;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 0.2s;
+        }
+        .daily-review-icon-btn:hover::after {
+          opacity: 1;
+        }
 
         #${this.editOverlayId} {
           position: fixed;
