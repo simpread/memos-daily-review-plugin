@@ -51,6 +51,16 @@ Automatically recommends a few past memos each day to help you review and spark 
 
 ---
 
+## Performance
+
+Benchmarks for datasets with 1000+ memos:
+- **Deck generation**: < 100ms
+- **Markdown rendering** (long documents): < 50ms
+- **Memory usage**: Stable after 100+ card switches
+- **Pool fetch**: Early-stop with 4s time budget, adaptive sizing
+
+---
+
 ## FAQ
 
 <details>
