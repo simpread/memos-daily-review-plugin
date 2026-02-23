@@ -2347,6 +2347,13 @@
           flex-direction: column;
           align-items: center;
           margin: auto;
+          transform: scale(0.9);
+          opacity: 0;
+          transition: transform 0.3s, opacity 0.3s;
+        }
+        #${this.imageOverlayId}.visible #${this.imageDialogId} {
+          transform: scale(1);
+          opacity: 1;
         }
         #${this.imagePreviewId} {
           max-width: 100%;
@@ -2355,10 +2362,12 @@
           display: block;
           border-radius: 4px;
           cursor: zoom-in;
+          transition: transform 0.3s ease, opacity 0.2s ease;
         }
         #${this.imagePreviewId}.zoomed {
           cursor: zoom-out;
           max-width: none;
+          transform: scale(1.5);
         }
         #${this.imageCaptionId} {
           margin-top: 12px;
@@ -3200,15 +3209,24 @@
       if (images.length === 0) return;
       const nextIndex = this.activeImageIndex + step;
       if (nextIndex < 0 || nextIndex >= images.length) return;
-      this.activeImageIndex = nextIndex;
 
-      // Reset zoom when navigating
+      // Add fade-out transition
       const img = document.getElementById(this.imagePreviewId);
       if (img) {
+        img.style.opacity = '0';
         img.classList.remove('zoomed');
       }
 
-      this.updateImagePreview();
+      // Wait for fade-out, then update
+      setTimeout(() => {
+        this.activeImageIndex = nextIndex;
+        this.updateImagePreview();
+
+        // Fade back in
+        if (img) {
+          img.style.opacity = '1';
+        }
+      }, 200);
     },
 
     updateImagePreview() {
