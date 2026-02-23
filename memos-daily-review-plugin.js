@@ -3086,6 +3086,7 @@
       dialog.setAttribute('role', 'dialog');
       dialog.setAttribute('aria-modal', 'true');
       dialog.setAttribute('aria-labelledby', 'daily-review-dialog-title');
+      dialog.setAttribute('tabindex', '-1');
       dialog.innerHTML = `
         <h2 id="daily-review-dialog-title" class="sr-only">${i18n.t('daily_review')}</h2>
         <div class="daily-review-header">
@@ -3442,6 +3443,19 @@
         requestAnimationFrame(() => {
           overlay.classList.add('visible');
           dialog.classList.add('visible');
+
+          // Move focus into dialog for keyboard and screen reader users.
+          const focusables = dialog.querySelectorAll(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          );
+          const target = focusables.length > 0 ? focusables[0] : dialog;
+          if (target && typeof target.focus === 'function') {
+            try {
+              target.focus({ preventScroll: true });
+            } catch (e) {
+              target.focus();
+            }
+          }
         });
       }
     },
@@ -3742,6 +3756,7 @@
     keydownHandler: null,
     loadingTimer: null,
     animationInProgress: false,
+    lastFocusedElement: null,
 
     init() {
       try {
@@ -3800,6 +3815,20 @@
         return !!el.isContentEditable;
       };
 
+      const getDialogFocusableElements = () => {
+        const dialog = document.getElementById(ui.dialogId);
+        if (!dialog || typeof dialog.querySelectorAll !== 'function') return [];
+        const nodes = dialog.querySelectorAll(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        return Array.from(nodes).filter((el) => {
+          if (!el || typeof el.focus !== 'function') return false;
+          if (el.disabled) return false;
+          if (typeof el.getAttribute === 'function' && el.getAttribute('aria-hidden') === 'true') return false;
+          return true;
+        });
+      };
+
       this.keydownHandler = (event) => {
         if (!this.isOpen) return;
         if (!event || typeof event.key !== 'string') return;
@@ -3816,6 +3845,49 @@
             this.closeDialog();
           }
           event.preventDefault();
+          return;
+        }
+
+        // Keep tab focus inside the primary dialog when sub-overlays are closed.
+        if (key === 'Tab' && !ui.isImagePreviewOpen() && !ui.isEditorOpen()) {
+          const dialog = document.getElementById(ui.dialogId);
+          if (dialog) {
+            const focusables = getDialogFocusableElements();
+            if (focusables.length === 0) {
+              if (typeof dialog.focus === 'function') {
+                try {
+                  dialog.focus({ preventScroll: true });
+                } catch (e) {
+                  dialog.focus();
+                }
+              }
+              event.preventDefault();
+              return;
+            }
+
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            const active = document.activeElement;
+            const isInsideDialog = typeof dialog.contains === 'function' ? dialog.contains(active) : false;
+
+            if (event.shiftKey) {
+              if (active === first || !isInsideDialog) {
+                try {
+                  last.focus({ preventScroll: true });
+                } catch (e) {
+                  last.focus();
+                }
+                event.preventDefault();
+              }
+            } else if (active === last || !isInsideDialog) {
+              try {
+                first.focus({ preventScroll: true });
+              } catch (e) {
+                first.focus();
+              }
+              event.preventDefault();
+            }
+          }
           return;
         }
 
@@ -3865,6 +3937,9 @@
         return;
       }
 
+      const currentFocus = document.activeElement;
+      this.lastFocusedElement = currentFocus && typeof currentFocus.focus === 'function' ? currentFocus : null;
+
       this.isOpen = true;
       // Rebind keyboard shortcuts when opening dialog
       this.bindKeyboardShortcuts();
@@ -3889,6 +3964,15 @@
       ui.closeEditor();
       ui.closeImagePreview();
       ui.hideDialog();
+      const target = this.lastFocusedElement;
+      this.lastFocusedElement = null;
+      if (target && typeof target.focus === 'function') {
+        try {
+          target.focus({ preventScroll: true });
+        } catch (e) {
+          target.focus();
+        }
+      }
       // Note: Keep keyboard listener registered but guarded by isOpen check
       // This avoids rebinding issues and the isOpen check prevents execution when closed
     },
