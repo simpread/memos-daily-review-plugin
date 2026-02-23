@@ -1927,7 +1927,7 @@
           background-color: var(--card);
           border: 1px solid var(--border);
           border-radius: 12px;
-          box-shadow: 0 10px 26px rgba(0, 0, 0, 0.12);
+          box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15), 0 4px 12px rgba(0, 0, 0, 0.08);
         }
         .daily-review-card-back {
           position: absolute;
@@ -1942,12 +1942,14 @@
           filter: saturate(0.9);
         }
         .daily-review-card-back.back-1 {
-          transform: translate(-50%, -50%) translateY(10px) scale(0.985);
-          opacity: 0.5;
+          transform: translate(-50%, -50%) translateY(12px) scale(0.985);
+          opacity: 0.45;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
         }
         .daily-review-card-back.back-2 {
-          transform: translate(-50%, -50%) translateY(18px) scale(0.97);
-          opacity: 0.4;
+          transform: translate(-50%, -50%) translateY(22px) scale(0.97);
+          opacity: 0.35;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
         }
         .daily-review-card-front {
           position: relative;
@@ -1956,6 +1958,8 @@
           overflow-y: auto;
           height: 100%;
           scrollbar-gutter: stable;
+          will-change: transform;
+          backface-visibility: hidden;
         }
 
         .daily-review-deck-footer {
@@ -1980,22 +1984,42 @@
           color: var(--muted-foreground);
           min-width: 64px;
           text-align: center;
+          transition: transform 0.05s, opacity 0.05s;
         }
         .daily-review-icon-btn {
           width: 40px;
           height: 40px;
           border-radius: 999px;
-          border: 1px solid var(--border);
+          border: 1.5px solid var(--border);
           background-color: var(--background);
           color: var(--foreground);
           display: inline-flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
-          transition: background-color 0.2s, transform 0.15s;
+          transition: background-color 0.2s, transform 0.15s, box-shadow 0.2s;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+          position: relative;
+          overflow: hidden;
+        }
+        .daily-review-icon-btn::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: radial-gradient(circle, rgba(0, 0, 0, 0.1) 0%, transparent 70%);
+          opacity: 0;
+          transform: scale(0);
+          transition: transform 0.3s, opacity 0.3s;
+        }
+        .daily-review-icon-btn:active::before {
+          transform: scale(1);
+          opacity: 1;
+          transition: transform 0s, opacity 0s;
         }
         .daily-review-icon-btn:hover {
           background-color: var(--accent);
+          transform: translateY(-1px);
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
         }
         .daily-review-icon-btn:active {
           transform: scale(0.98);
@@ -2003,6 +2027,14 @@
         .daily-review-icon-btn:disabled {
           opacity: 0.5;
           cursor: not-allowed;
+        }
+        .daily-review-icon-btn.delete-btn {
+          border-color: rgba(239, 68, 68, 0.3);
+          color: rgb(239, 68, 68);
+        }
+        .daily-review-icon-btn.delete-btn:hover {
+          border-color: rgba(239, 68, 68, 0.5);
+          background-color: rgba(239, 68, 68, 0.05);
         }
 
         #${this.editOverlayId} {
@@ -2133,6 +2165,10 @@
           color: var(--foreground);
           word-break: break-word;
           margin-bottom: 10px;
+          transition: transform 0.2s;
+        }
+        .daily-review-card-front:hover .daily-review-memo-content {
+          transform: translateY(-1px);
         }
         .daily-review-memo-content p {
           margin: 0 0 0.5em;
@@ -2205,6 +2241,11 @@
           border-radius: 4px;
           font-size: 12px;
           font-weight: 500;
+          transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .daily-review-memo-tag:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
         .daily-review-memo-images {
           display: grid;
@@ -2250,6 +2291,16 @@
         }
         .daily-review-memo-image-link:hover .daily-review-memo-image {
           opacity: 0.9;
+          transform: scale(1.02);
+        }
+        .daily-review-memo-image {
+          width: 100%;
+          height: 160px;
+          object-fit: cover;
+          object-position: center top;
+          display: block;
+          transition: box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
+          cursor: pointer;
         }
 
         #${this.imageOverlayId} {
@@ -2363,6 +2414,7 @@
           text-align: center;
           padding: 40px 20px;
           color: var(--muted-foreground);
+          animation: daily-review-fade-in 0.3s ease;
         }
         .daily-review-loading-spinner {
           width: 32px;
@@ -2372,9 +2424,58 @@
           border-radius: 50%;
           animation: daily-review-spin 0.8s linear infinite;
           margin: 0 auto 12px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        @keyframes daily-review-fade-in {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
         }
         @keyframes daily-review-spin {
           to { transform: rotate(360deg); }
+        }
+        @keyframes daily-review-slide-in-left {
+          from {
+            transform: translateX(-100%);
+            opacity: 0;
+          }
+          to {
+            transform: translateX(0);
+            opacity: 1;
+          }
+        }
+        @keyframes daily-review-slide-in-right {
+          from {
+            transform: translateX(100%);
+            opacity: 0;
+          }
+          to {
+            transform: translateX(0);
+            opacity: 1;
+          }
+        }
+        @keyframes daily-review-slide-out-left {
+          from {
+            transform: translateX(0);
+            opacity: 1;
+          }
+          to {
+            transform: translateX(-100%);
+            opacity: 0;
+          }
+        }
+        @keyframes daily-review-slide-out-right {
+          from {
+            transform: translateX(0);
+            opacity: 1;
+          }
+          to {
+            transform: translateX(100%);
+            opacity: 0;
+          }
         }
 
         .daily-review-error {
@@ -2416,6 +2517,54 @@
         }
         .daily-review-btn-primary:hover {
           opacity: 0.9;
+        }
+
+        /* Mobile responsive styles */
+        @media (max-width: 640px) {
+          #${this.dialogId} {
+            width: calc(100% - 1rem);
+            height: calc(100vh - 2rem);
+          }
+          .daily-review-header {
+            padding: 12px 16px;
+          }
+          .daily-review-deck {
+            margin: 12px 16px;
+            padding: 14px;
+          }
+          .daily-review-card-front {
+            padding: 14px;
+          }
+          .daily-review-memo-content {
+            font-size: 15px;
+            line-height: 1.65;
+          }
+          .daily-review-counter {
+            font-size: 14px;
+            min-width: 80px;
+          }
+          .daily-review-footer {
+            padding: 10px 16px;
+          }
+          .daily-review-deck-footer {
+            flex-direction: column;
+            gap: 10px;
+          }
+          .daily-review-actions {
+            width: 100%;
+            justify-content: center;
+            gap: 12px;
+          }
+          .daily-review-pager {
+            width: 100%;
+            justify-content: center;
+            gap: 12px;
+          }
+          .daily-review-icon-btn {
+            width: 44px;
+            height: 44px;
+            margin: 2px;
+          }
         }
       `;
       document.head.appendChild(styles);
@@ -2519,7 +2668,7 @@
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
                     </svg>
                   </button>
-                  <button class="daily-review-icon-btn" id="${this.deleteId}" title="${i18n.t('delete_memo')}">
+                  <button class="daily-review-icon-btn delete-btn" id="${this.deleteId}" title="${i18n.t('delete_memo')}">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <polyline points="3 6 5 6 21 6"></polyline>
                       <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
@@ -2852,6 +3001,9 @@
       const next = document.getElementById(this.nextId);
       if (!card) return;
 
+      // Clean up any leftover animation classes
+      card.style.animation = '';
+
       const createTime = utils.toTimeMs(memo.createTime, Date.now());
       const rawContent = memo.content || '';
       const memoKey = memo.id || utils.getMemoId(memo) || `memo-${Math.random().toString(36).slice(2)}`;
@@ -2907,7 +3059,20 @@
       // Reset scroll position when switching cards.
       card.scrollTop = 0;
 
-      if (counter) counter.textContent = `${index + 1} / ${total}`;
+      if (counter) {
+        counter.textContent = `${index + 1} / ${total}`;
+        // Animate counter change
+        counter.style.animation = 'none';
+        requestAnimationFrame(() => {
+          counter.style.animation = '';
+          counter.style.transform = 'scale(1.1)';
+          counter.style.opacity = '0.7';
+          setTimeout(() => {
+            counter.style.transform = 'scale(1)';
+            counter.style.opacity = '1';
+          }, 50);
+        });
+      }
       if (prev) prev.disabled = index <= 0;
       if (next) next.disabled = index >= total - 1;
 
@@ -3034,6 +3199,7 @@
     isSavingEdit: false,
     keydownHandler: null,
     loadingTimer: null,
+    animationInProgress: false,
 
     init() {
       try {
@@ -3345,17 +3511,79 @@
     prev() {
       if (!this.deckMemos.length) return;
       if (this.deckIndex <= 0) return;
-      this.deckIndex -= 1;
-      ui.renderDeck(this.deckMemos, this.deckIndex);
-      this.markViewedCurrent();
+      if (this.animationInProgress) return;
+
+      this.animationInProgress = true;
+      const cardFront = document.querySelector('.daily-review-card-front');
+      if (!cardFront) {
+        this.deckIndex -= 1;
+        ui.renderDeck(this.deckMemos, this.deckIndex);
+        this.markViewedCurrent();
+        this.animationInProgress = false;
+        return;
+      }
+
+      // Add exit animation (slide out right)
+      cardFront.style.animation = 'daily-review-slide-out-right 0.2s ease-out forwards';
+
+      setTimeout(() => {
+        this.deckIndex -= 1;
+        ui.renderDeck(this.deckMemos, this.deckIndex);
+        this.markViewedCurrent();
+
+        // Add entrance animation (slide in from left)
+        requestAnimationFrame(() => {
+          const newCardFront = document.querySelector('.daily-review-card-front');
+          if (newCardFront) {
+            newCardFront.style.animation = 'daily-review-slide-in-left 0.2s ease-out forwards';
+            setTimeout(() => {
+              newCardFront.style.animation = '';
+              this.animationInProgress = false;
+            }, 200);
+          } else {
+            this.animationInProgress = false;
+          }
+        });
+      }, 200);
     },
 
     next() {
       if (!this.deckMemos.length) return;
       if (this.deckIndex >= this.deckMemos.length - 1) return;
-      this.deckIndex += 1;
-      ui.renderDeck(this.deckMemos, this.deckIndex);
-      this.markViewedCurrent();
+      if (this.animationInProgress) return;
+
+      this.animationInProgress = true;
+      const cardFront = document.querySelector('.daily-review-card-front');
+      if (!cardFront) {
+        this.deckIndex += 1;
+        ui.renderDeck(this.deckMemos, this.deckIndex);
+        this.markViewedCurrent();
+        this.animationInProgress = false;
+        return;
+      }
+
+      // Add exit animation (slide out left)
+      cardFront.style.animation = 'daily-review-slide-out-left 0.2s ease-out forwards';
+
+      setTimeout(() => {
+        this.deckIndex += 1;
+        ui.renderDeck(this.deckMemos, this.deckIndex);
+        this.markViewedCurrent();
+
+        // Add entrance animation (slide in from right)
+        requestAnimationFrame(() => {
+          const newCardFront = document.querySelector('.daily-review-card-front');
+          if (newCardFront) {
+            newCardFront.style.animation = 'daily-review-slide-in-right 0.2s ease-out forwards';
+            setTimeout(() => {
+              newCardFront.style.animation = '';
+              this.animationInProgress = false;
+            }, 200);
+          } else {
+            this.animationInProgress = false;
+          }
+        });
+      }, 200);
     },
 
     markViewedCurrent() {
