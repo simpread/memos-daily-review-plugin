@@ -31,6 +31,7 @@
     HISTORY_KEY: 'memos-daily-review-history',
     LANGUAGE_KEY: 'memos-daily-review-language',
     BATCH_KEY: 'memos-daily-review-batch',
+    CAPABILITY_KEY: 'memos-daily-review-capabilities',
     AUTH_TOKEN_KEY: 'memos_access_token',
     AUTH_EXPIRES_KEY: 'memos_token_expires_at',
     DEFAULT_TIME_RANGE: '6months',
@@ -44,8 +45,11 @@
     ],
     COUNT_OPTIONS: [4, 8, 12, 16, 20, 24],
     API_PAGE_SIZE: 1000,
+    API_MEMO_ORDER_BY: 'create_time desc',
     POOL_TTL_MS: 6 * 60 * 60 * 1000,
     POOL_MAX_PAGES_ALL: 2,
+    CAPABILITY_TTL_MS: 24 * 60 * 60 * 1000,
+    REFRESH_RETRY_COOLDOWN_MS: 15 * 60 * 1000,
     NO_REPEAT_DAYS: 3,
     HISTORY_MAX_ITEMS: 5000,
     DECK_SCHEMA_VERSION: 3
@@ -138,6 +142,7 @@
         'offline_error': '无法加载：网络连接已断开',
         'error_network': '网络错误，请检查连接',
         'error_server': '服务器错误，请稍后重试',
+        'auth_required': '请先登录后再使用每日回顾',
         'error_permission': '权限不足',
         'error_not_found': '内容未找到',
         'edit_not_supported': '当前 Memo 不支持编辑',
@@ -194,6 +199,7 @@
         'offline_error': 'Cannot load: No network connection',
         'error_network': 'Network error, please check connection',
         'error_server': 'Server error, please try again later',
+        'auth_required': 'Please sign in to use Daily Review',
         'error_permission': 'Permission denied',
         'error_not_found': 'Content not found',
         'edit_not_supported': 'This memo cannot be edited',
@@ -1063,6 +1069,145 @@
     isValid(deck, expectedKey) {
       if (!deck || typeof deck.key !== 'string') return false;
       return deck.key === expectedKey && Array.isArray(deck.memos);
+    },
+
+    clear() {
+      storageUtils.removeItem(CONFIG.CACHE_KEY);
+    }
+  };
+
+  // ============================================
+  // Capability Service
+  // ============================================
+  const capabilityService = {
+    state: null,
+
+    getDefaultState() {
+      return {
+        schemaVersion: CONFIG.DECK_SCHEMA_VERSION,
+        timestamp: 0,
+        preferredCurrentUserEndpoint: '',
+        preferredRefreshEndpoint: '',
+        refreshUnsupported: false,
+        refreshUnsupportedAt: 0,
+        updateMaskStyle: '',
+        supportsListFilter: null,
+        supportsListOrderBy: null
+      };
+    },
+
+    loadState() {
+      const fallback = this.getDefaultState();
+      try {
+        const saved = localStorage.getItem(CONFIG.CAPABILITY_KEY);
+        if (!saved) return fallback;
+        const parsed = JSON.parse(saved);
+        if (!parsed || typeof parsed !== 'object') return fallback;
+        const timestamp = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0;
+        if (Date.now() - timestamp > CONFIG.CAPABILITY_TTL_MS) return fallback;
+        return {
+          ...fallback,
+          ...parsed,
+          timestamp
+        };
+      } catch (e) {
+        console.warn('Failed to load capability cache:', e);
+        return fallback;
+      }
+    },
+
+    getState() {
+      if (!this.state) {
+        this.state = this.loadState();
+      }
+      return this.state;
+    },
+
+    saveState(nextState) {
+      this.state = nextState;
+      storageUtils.setItem(CONFIG.CAPABILITY_KEY, JSON.stringify(nextState));
+    },
+
+    remember(patch) {
+      const next = {
+        ...this.getState(),
+        ...patch,
+        timestamp: Date.now(),
+        schemaVersion: CONFIG.DECK_SCHEMA_VERSION
+      };
+      this.saveState(next);
+    },
+
+    getCurrentUserEndpoints(defaults) {
+      const state = this.getState();
+      const preferred = state.preferredCurrentUserEndpoint;
+      if (!preferred) return [...defaults];
+      const result = [preferred];
+      for (const endpoint of defaults) {
+        if (endpoint !== preferred) result.push(endpoint);
+      }
+      return result;
+    },
+
+    markCurrentUserEndpoint(endpoint) {
+      if (!endpoint) return;
+      this.remember({ preferredCurrentUserEndpoint: endpoint });
+    },
+
+    getRefreshEndpoints(defaults) {
+      const state = this.getState();
+      const preferred = state.preferredRefreshEndpoint;
+      if (!preferred) return [...defaults];
+      const result = [preferred];
+      for (const endpoint of defaults) {
+        if (endpoint !== preferred) result.push(endpoint);
+      }
+      return result;
+    },
+
+    markRefreshEndpoint(endpoint) {
+      if (!endpoint) return;
+      this.remember({ preferredRefreshEndpoint: endpoint, refreshUnsupported: false, refreshUnsupportedAt: 0 });
+    },
+
+    markRefreshUnsupported() {
+      this.remember({ refreshUnsupported: true, refreshUnsupportedAt: Date.now(), preferredRefreshEndpoint: '' });
+    },
+
+    canAttemptRefresh() {
+      const state = this.getState();
+      if (!state.refreshUnsupported) return true;
+      const blockedAt = typeof state.refreshUnsupportedAt === 'number' ? state.refreshUnsupportedAt : 0;
+      if (!blockedAt) return true;
+      return Date.now() - blockedAt >= CONFIG.REFRESH_RETRY_COOLDOWN_MS;
+    },
+
+    getUpdateMaskStyles() {
+      const preferred = this.getState().updateMaskStyle;
+      if (preferred === 'snake') return ['snake', 'camel'];
+      if (preferred === 'camel') return ['camel', 'snake'];
+      return ['camel', 'snake'];
+    },
+
+    markUpdateMaskStyle(style) {
+      if (style !== 'camel' && style !== 'snake') return;
+      this.remember({ updateMaskStyle: style });
+    },
+
+    canUseListFilter() {
+      return this.getState().supportsListFilter !== false;
+    },
+
+    canUseListOrderBy() {
+      return this.getState().supportsListOrderBy !== false;
+    },
+
+    markListFilterSupport(supported) {
+      this.remember({ supportsListFilter: !!supported });
+    },
+
+    markListOrderBySupport(supported) {
+      this.remember({ supportsListOrderBy: !!supported });
     }
   };
 
@@ -1085,44 +1230,65 @@
         filter = `created_ts >= ${startTime}`;
       }
 
-      const params = new URLSearchParams({
-        pageSize: String(CONFIG.API_PAGE_SIZE)
-      });
-
-      if (filter) {
-        params.append('filter', filter);
-      }
-      if (pageToken) {
-        params.append('pageToken', pageToken);
-      }
-
       // Wrap in retry logic
       return await retryUtils.withRetry(async () => {
-        const doFetch = async () => {
-          const headers = { 'Accept': 'application/json', ...authService.getAuthHeaders() };
-          return await utils.fetchWithTimeout(
-            `/api/v1/memos?${params.toString()}`,
-            { method: 'GET', headers, credentials: 'include' },
-            8000
-          );
-        };
+        let allowFilter = !!filter && capabilityService.canUseListFilter();
+        let allowOrderBy = capabilityService.canUseListOrderBy();
 
-        let response = await doFetch();
-        if (response.status === 401) {
-          await authService.ensureAccessToken();
-          response = await doFetch();
-        }
-        if (!response.ok) {
+        for (let step = 0; step < 3; step++) {
+          const params = new URLSearchParams({
+            pageSize: String(CONFIG.API_PAGE_SIZE),
+            state: 'NORMAL'
+          });
+          if (pageToken) params.append('pageToken', pageToken);
+          if (allowOrderBy) params.append('orderBy', CONFIG.API_MEMO_ORDER_BY);
+          if (allowFilter) params.append('filter', filter);
+
+          const doFetch = async () => {
+            const headers = { 'Accept': 'application/json', ...authService.getAuthHeaders() };
+            return await utils.fetchWithTimeout(
+              `/api/v1/memos?${params.toString()}`,
+              { method: 'GET', headers, credentials: 'include' },
+              8000
+            );
+          };
+
+          let response = await doFetch();
+          if (response.status === 401) {
+            await authService.ensureAccessToken();
+            response = await doFetch();
+          }
+
+          if (response.ok) {
+            if (allowFilter) capabilityService.markListFilterSupport(true);
+            if (allowOrderBy) capabilityService.markListOrderBySupport(true);
+            let data;
+            try {
+              data = await response.json();
+            } catch (jsonError) {
+              console.error('Failed to parse JSON response:', jsonError);
+              throw new Error('Invalid API response format');
+            }
+            return { memos: data.memos || [], nextPageToken: data.nextPageToken || data.next_page_token || '' };
+          }
+
+          if (response.status === 400) {
+            if (allowFilter) {
+              allowFilter = false;
+              capabilityService.markListFilterSupport(false);
+              continue;
+            }
+            if (allowOrderBy) {
+              allowOrderBy = false;
+              capabilityService.markListOrderBySupport(false);
+              continue;
+            }
+          }
+
           throw new Error(`API error: ${response.status}`);
         }
-        let data;
-        try {
-          data = await response.json();
-        } catch (jsonError) {
-          console.error('Failed to parse JSON response:', jsonError);
-          throw new Error('Invalid API response format');
-        }
-        return { memos: data.memos || [], nextPageToken: data.nextPageToken || data.next_page_token || '' };
+
+        throw new Error('API error: 400');
       }, { maxAttempts: 3, initialDelay: 1000 });
     },
 
@@ -1131,14 +1297,15 @@
       const urlBase = `/api/v1/${memoName}`;
       const body = JSON.stringify({ name: memoName, content });
       let refreshed = false;
-
-      const candidates = [
-        `${urlBase}?updateMask.paths=content&updateMask.paths=update_time`,
-        `${urlBase}?update_mask.paths=content&update_mask.paths=update_time`
-      ];
+      const styleToUrl = {
+        camel: `${urlBase}?updateMask.paths=content&updateMask.paths=update_time`,
+        snake: `${urlBase}?update_mask.paths=content&update_mask.paths=update_time`
+      };
+      const candidates = capabilityService.getUpdateMaskStyles().map((style) => ({ style, url: styleToUrl[style] }));
 
       let lastError = null;
-      for (const url of candidates) {
+      for (const candidate of candidates) {
+        const { style, url } = candidate;
         try {
           let headers = { 'Content-Type': 'application/json', 'Accept': 'application/json', ...authService.getAuthHeaders() };
           let response = await utils.fetchWithTimeout(url, { method: 'PATCH', headers, body, credentials: 'include' }, 8000);
@@ -1149,6 +1316,7 @@
             response = await utils.fetchWithTimeout(url, { method: 'PATCH', headers, body, credentials: 'include' }, 8000);
           }
           if (response.ok) {
+            capabilityService.markUpdateMaskStyle(style);
             let data;
             try {
               data = await response.json();
@@ -1195,29 +1363,51 @@
   // ============================================
   const authService = {
     refreshPromise: null,
+    tokenKeys: ['memos_access_token', 'access_token', 'accessToken'],
+    tokenExpiryKeys: ['memos_token_expires_at', 'token_expires_at', 'accessTokenExpiresAt'],
+    currentUserEndpoints: ['/api/v1/auth/sessions/current', '/api/auth/sessions/current', '/api/v1/auth/me', '/api/v1/user/me', '/api/v1/users/me'],
+    legacyAuthStatusEndpoints: ['/api/auth/status', '/api/v1/auth/status'],
+
+    readFromStorage(storage, keys) {
+      try {
+        for (const key of keys) {
+          const value = storage.getItem(key);
+          if (value) return value;
+        }
+      } catch {
+        return null;
+      }
+      return null;
+    },
 
     getAccessToken() {
-      const readToken = (storage) => {
-        try {
-          return storage.getItem(CONFIG.AUTH_TOKEN_KEY);
-        } catch {
-          return null;
-        }
-      };
-      return readToken(sessionStorage) || readToken(localStorage) || null;
+      return this.readFromStorage(sessionStorage, this.tokenKeys) || this.readFromStorage(localStorage, this.tokenKeys) || null;
     },
 
     writeAccessToken(token, expiresAt) {
+      const storages = [sessionStorage, localStorage];
       try {
         if (token) {
-          sessionStorage.setItem(CONFIG.AUTH_TOKEN_KEY, token);
-          if (expiresAt) {
-            sessionStorage.setItem(CONFIG.AUTH_EXPIRES_KEY, expiresAt.toISOString());
+          for (const storage of storages) {
+            for (const key of this.tokenKeys) {
+              storage.setItem(key, token);
+            }
+            if (expiresAt) {
+              for (const key of this.tokenExpiryKeys) {
+                storage.setItem(key, expiresAt.toISOString());
+              }
+            }
           }
           return;
         }
-        sessionStorage.removeItem(CONFIG.AUTH_TOKEN_KEY);
-        sessionStorage.removeItem(CONFIG.AUTH_EXPIRES_KEY);
+        for (const storage of storages) {
+          for (const key of this.tokenKeys) {
+            storage.removeItem(key);
+          }
+          for (const key of this.tokenExpiryKeys) {
+            storage.removeItem(key);
+          }
+        }
       } catch (e) {
         // ignore storage errors
       }
@@ -1243,42 +1433,98 @@
     },
 
     async refreshAccessTokenViaConnect() {
-      try {
-        const response = await utils.fetchWithTimeout(
-          '/memos.api.v1.AuthService/RefreshToken',
-          {
-            method: 'POST',
-            credentials: 'include',
-            headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-              'Connect-Protocol-Version': '1'
-            },
-            body: '{}'
+      const endpointMap = {
+        '/api/v1/auth/refresh': {
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
           },
-          8000
-        );
-        if (!response.ok) return null;
-        let data;
-        try {
-          data = await response.json();
-        } catch (jsonError) {
-          console.error('Failed to parse JSON response:', jsonError);
-          return null;
+          unwrap(data) {
+            return data;
+          }
+        },
+        '/memos.api.v1.AuthService/RefreshToken': {
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1'
+          },
+          unwrap(data) {
+            return data && data.message ? data.message : data;
+          }
+        },
+        '/api/auth/refresh': {
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          unwrap(data) {
+            return data;
+          }
         }
-        const message = data && data.message ? data.message : data;
-        const token = message?.accessToken || message?.access_token || null;
-        const expiresAt = this.parseExpiresAt(message?.expiresAt || message?.expires_at);
-        this.writeAccessToken(token, expiresAt);
-        return token;
-      } catch (e) {
-        return null;
+      };
+      const defaultEndpoints = [
+        '/api/v1/auth/refresh',
+        '/memos.api.v1.AuthService/RefreshToken',
+        '/api/auth/refresh'
+      ];
+      const endpoints = capabilityService.getRefreshEndpoints(defaultEndpoints);
+      let sawRefreshEndpoint = false;
+      let hadTransportError = false;
+
+      for (const endpointUrl of endpoints) {
+        const endpoint = endpointMap[endpointUrl];
+        if (!endpoint) continue;
+        try {
+          const response = await utils.fetchWithTimeout(
+            endpointUrl,
+            {
+              method: 'POST',
+              credentials: 'include',
+              headers: endpoint.headers,
+              body: '{}'
+            },
+            8000
+          );
+
+          if (response.status === 404 || response.status === 405) {
+            continue;
+          }
+
+          sawRefreshEndpoint = true;
+          capabilityService.markRefreshEndpoint(endpointUrl);
+
+          if (!response.ok) continue;
+
+          let data;
+          try {
+            data = await response.json();
+          } catch (jsonError) {
+            console.error('Failed to parse JSON response:', jsonError);
+            continue;
+          }
+          const message = endpoint.unwrap(data);
+          const token = message?.accessToken || message?.access_token || null;
+          const expiresAt = this.parseExpiresAt(message?.expiresAt || message?.expires_at || message?.accessTokenExpiresAt || message?.access_token_expires_at);
+          this.writeAccessToken(token, expiresAt);
+          if (token) return token;
+        } catch (e) {
+          // Continue to next refresh endpoint.
+          hadTransportError = true;
+        }
       }
+
+      if (!sawRefreshEndpoint && !hadTransportError) {
+        capabilityService.markRefreshUnsupported();
+      }
+
+      return null;
     },
 
-    async ensureAccessToken() {
+    async ensureAccessToken(forceRefresh = false) {
       const token = this.getAccessToken();
-      if (token) return token;
+      if (token && !forceRefresh) return token;
+      if (!capabilityService.canAttemptRefresh()) return null;
       if (this.refreshPromise) return await this.refreshPromise;
       this.refreshPromise = this.refreshAccessTokenViaConnect().finally(() => {
         this.refreshPromise = null;
@@ -1293,35 +1539,137 @@
     },
 
     async getCurrentUser() {
-      const token = this.getAccessToken();
-      if (!token) return null;
-      const response = await utils.fetchWithTimeout(
-        '/api/v1/auth/me',
-        {
-          method: 'GET',
-          cache: 'no-store',
-          credentials: 'include',
-          headers: { 'Accept': 'application/json', ...this.getAuthHeaders() }
-        },
-        5000
-      );
-      if (!response.ok) return null;
-      let data;
-      try {
-        data = await response.json();
-      } catch (jsonError) {
-        console.error('Failed to parse JSON response:', jsonError);
+      const parseUserPayload = (data) => {
+        if (!data || typeof data !== 'object') return null;
+        if (data.user && typeof data.user === 'object') return data.user;
+        if (data.data && typeof data.data === 'object') {
+          if (data.data.user && typeof data.data.user === 'object') return data.data.user;
+          if (typeof data.data.name === 'string' || typeof data.data.username === 'string') return data.data;
+        }
+        if (typeof data.name === 'string' || typeof data.username === 'string') return data;
         return null;
+      };
+
+      const doFetch = async (url) => {
+        try {
+          return await utils.fetchWithTimeout(
+            url,
+            {
+              method: 'GET',
+              cache: 'no-store',
+              credentials: 'include',
+              headers: { 'Accept': 'application/json', ...this.getAuthHeaders() }
+            },
+            5000
+          );
+        } catch (e) {
+          return null;
+        }
+      };
+
+      let hasTriedRefresh = false;
+      let hadSuccessfulAuthResponse = false;
+      const currentUserEndpoints = capabilityService.getCurrentUserEndpoints(this.currentUserEndpoints);
+
+      for (const endpoint of currentUserEndpoints) {
+        let response = await doFetch(endpoint);
+        if (!response) continue;
+
+        if (response.status === 404 || response.status === 405) continue;
+        capabilityService.markCurrentUserEndpoint(endpoint);
+
+        if (response.status === 401) {
+          if (hasTriedRefresh) continue;
+          hasTriedRefresh = true;
+          // Existing token may be stale after sign-out/sign-in cycles.
+          const refreshed = await this.ensureAccessToken(true);
+          if (!refreshed) {
+            this.writeAccessToken(null);
+            return null;
+          }
+          response = await doFetch(endpoint);
+          if (!response) continue;
+          if (response.status === 404 || response.status === 405) continue;
+        }
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            this.writeAccessToken(null);
+          }
+          continue;
+        }
+        hadSuccessfulAuthResponse = true;
+
+        let data;
+        try {
+          data = await response.json();
+        } catch (jsonError) {
+          console.error('Failed to parse JSON response:', jsonError);
+          continue;
+        }
+
+        const user = parseUserPayload(data);
+        if (user) return user;
       }
-      return data && data.user ? data.user : null;
+
+      // Legacy compatibility: older Memos versions expose auth status via /api/auth/status.
+      for (const legacyEndpoint of this.legacyAuthStatusEndpoints) {
+        for (const method of ['POST', 'GET']) {
+          try {
+            const requestOptions = {
+              method,
+              cache: 'no-store',
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+              }
+            };
+            if (method === 'POST') {
+              requestOptions.body = '{}';
+            }
+            const legacyResponse = await utils.fetchWithTimeout(
+              legacyEndpoint,
+              requestOptions,
+              5000
+            );
+            if (!legacyResponse.ok) {
+              // If method not allowed, try the other method for this endpoint.
+              if (legacyResponse.status === 405) continue;
+              break;
+            }
+            hadSuccessfulAuthResponse = true;
+            let legacyData;
+            try {
+              legacyData = await legacyResponse.json();
+            } catch (jsonError) {
+              console.error('Failed to parse JSON response:', jsonError);
+              break;
+            }
+            const legacyUser = parseUserPayload(legacyData);
+            if (legacyUser) return legacyUser;
+          } catch (e) {
+            // Ignore legacy endpoint failures.
+          }
+        }
+      }
+
+      if (hadSuccessfulAuthResponse) {
+        return { authenticated: true };
+      }
+
+      return null;
     },
 
     async isAuthenticated() {
       try {
         const user = await this.getCurrentUser();
-        return !!user;
+        if (user) return true;
+        // Fallback: if token exists but user endpoint is incompatible/unavailable,
+        // allow entry and let downstream API calls surface real auth errors.
+        return !!this.getAccessToken();
       } catch (e) {
-        return false;
+        return !!this.getAccessToken();
       }
     }
   };
@@ -2682,10 +3030,11 @@
         ui.createImagePreview();
         ui.createEditDialog();
 
-        this.updateEntryVisibility();
+        this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error));
         this.patchRouteEvents();
-        window.addEventListener('popstate', () => this.updateEntryVisibility());
-        window.addEventListener('daily-review-routechange', () => this.updateEntryVisibility());
+        window.addEventListener('popstate', () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
+        window.addEventListener('daily-review-routechange', () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
+        window.addEventListener('focus', () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
         this.bindKeyboardShortcuts();
       } catch (error) {
         console.error('Failed to initialize Daily Review plugin:', error);
@@ -2761,6 +3110,13 @@
     async openDialog() {
       if (ui.isAuthRoute()) return;
       if (this.isOpen) return;
+
+      const isAuthenticated = await authService.isAuthenticated();
+      if (!isAuthenticated) {
+        alert(i18n.t('auth_required'));
+        return;
+      }
+
       this.isOpen = true;
       // Load batch state from localStorage (persists across dialog open/close)
       this.deckBatch = batchService.load();
@@ -2803,7 +3159,7 @@
       };
     },
 
-    updateEntryVisibility() {
+    async updateEntryVisibility() {
       if (ui.isAuthRoute()) {
         ui.hideFloatingButton();
       } else {
@@ -2872,7 +3228,7 @@
         deckService.clear();
 
         if (this.deckMemos.length === 0) {
-          ui.showCard(null, 0, 0);
+          ui.renderDeck([], 0);
           return;
         }
 
@@ -2880,7 +3236,7 @@
         if (this.deckIndex >= this.deckMemos.length) {
           this.deckIndex = this.deckMemos.length - 1;
         }
-        ui.showCard(this.deckMemos[this.deckIndex], this.deckIndex, this.deckMemos.length);
+        ui.renderDeck(this.deckMemos, this.deckIndex);
       } catch (e) {
         console.error('Failed to delete memo:', e);
         alert(i18n.t('delete_failed'));
@@ -3002,29 +3358,45 @@
 
       const normalized = [];
       const seen = new Set();
+      const timeRangeConfig = CONFIG.TIME_RANGES.find((t) => t.value === timeRange);
+      const startTimeMs = timeRangeConfig && timeRangeConfig.days !== null
+        ? Date.now() - (timeRangeConfig.days * 24 * 60 * 60 * 1000)
+        : null;
+      const includeMemo = (memo) => {
+        if (!memo || !memo.id) return false;
+        if (startTimeMs === null) return true;
+        const createMs = utils.toTimeMs(memo.createTime, 0);
+        return createMs >= startTimeMs;
+      };
 
       const first = await apiService.fetchMemos(timeRange);
       for (const memo of first.memos || []) {
         const m = utils.normalizeMemo(memo);
-        if (!m.id) continue;
+        if (!includeMemo(m)) continue;
         if (seen.has(m.id)) continue;
         seen.add(m.id);
         normalized.push(m);
       }
 
-      if (timeRange === 'all' && first.nextPageToken && CONFIG.POOL_MAX_PAGES_ALL > 1) {
+      let nextPageToken = first.nextPageToken;
+      const maxPages = timeRange === 'all' ? CONFIG.POOL_MAX_PAGES_ALL : 1;
+      let currentPage = 1;
+      while (nextPageToken && currentPage < maxPages) {
         try {
-          const second = await apiService.fetchMemos(timeRange, first.nextPageToken);
-          for (const memo of second.memos || []) {
+          const next = await apiService.fetchMemos(timeRange, nextPageToken);
+          for (const memo of next.memos || []) {
             const m = utils.normalizeMemo(memo);
-            if (!m.id) continue;
+            if (!includeMemo(m)) continue;
             if (seen.has(m.id)) continue;
             seen.add(m.id);
             normalized.push(m);
           }
+          nextPageToken = next.nextPageToken;
+          currentPage += 1;
         } catch (e) {
-          // Best-effort second page; ignore failures to keep load low and UX resilient.
-          console.warn('Failed to fetch extra memo page for pool:', e);
+          // Best-effort additional pages; ignore failures to keep load low and UX resilient.
+          console.warn('Failed to fetch additional memo page for pool:', e);
+          break;
         }
       }
 
@@ -3246,13 +3618,15 @@
 
         if (error.message && error.message.includes('OFFLINE')) {
           errorMessage = i18n.t('offline_error');
+        } else if (error.message && /API error: 401/.test(error.message)) {
+          errorMessage = i18n.t('auth_required');
         } else if (error.message && /API error: 5[0-9]{2}/.test(error.message)) {
           errorMessage = i18n.t('error_server');
         } else if (error.message && /API error: 403/.test(error.message)) {
           errorMessage = i18n.t('error_permission');
         } else if (error.message && /API error: 404/.test(error.message)) {
           errorMessage = i18n.t('error_not_found');
-        } else if (error.message && error.message.includes('network') || error.message && error.message.includes('fetch')) {
+        } else if (error.message && (error.message.includes('network') || error.message.includes('fetch'))) {
           errorMessage = i18n.t('error_network');
         }
 
