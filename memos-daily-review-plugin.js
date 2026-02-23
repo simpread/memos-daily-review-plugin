@@ -134,11 +134,17 @@
         'empty_state': '没有找到符合条件的 Memo',
         'empty_hint': '尝试调整时间范围或创建更多 Memo',
         'load_failed': '加载失败，请检查网络连接或登录状态',
+        'offline_notice': '网络连接已断开',
+        'offline_error': '无法加载：网络连接已断开',
         'edit_not_supported': '当前 Memo 不支持编辑',
         'saving': '保存中…',
         'save_failed_auth': '保存失败：需要登录或无权限',
         'save_failed_permission': '保存失败：无权限',
         'save_failed_retry': '保存失败，请稍后重试',
+        'delete_memo': '删除当前 Memo',
+        'delete_confirm': '确定要删除这条 Memo 吗？此操作不可撤销。',
+        'delete_failed': '删除失败，请稍后重试',
+        'click_to_zoom': '点击图片可放大查看',
 
         // Description
         'single_card_desc': '单张卡片浏览模式，专注于当前内容。可通过左右箭头键或按钮切换。'
@@ -180,11 +186,17 @@
         'empty_state': 'No memos found',
         'empty_hint': 'Try adjusting the time range or create more memos',
         'load_failed': 'Failed to load. Please check your network or login status',
+        'offline_notice': 'You are offline',
+        'offline_error': 'Cannot load: No network connection',
         'edit_not_supported': 'This memo cannot be edited',
         'saving': 'Saving...',
         'save_failed_auth': 'Save failed: Login required',
         'save_failed_permission': 'Save failed: Permission denied',
         'save_failed_retry': 'Save failed. Please try again later',
+        'delete_memo': 'Delete Memo',
+        'delete_confirm': 'Are you sure you want to delete this memo? This cannot be undone.',
+        'delete_failed': 'Delete failed. Please try again later',
+        'click_to_zoom': 'Click image to zoom',
 
         // Description
         'single_card_desc': 'Single card browsing mode. Focus on current content. Use arrow keys or buttons to navigate.'
@@ -392,7 +404,7 @@
 
       // Italic
       html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-      html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+      html = html.replace(/(?<!\w)_(.+?)_(?!\w)/g, '<em>$1</em>');
 
       // Strikethrough
       html = html.replace(/~~(.+?)~~/g, '<del>$1</del>');
@@ -554,6 +566,16 @@
           continue;
         }
 
+        // If we're inside a list and this line is indented (continuation of last li), append to it.
+        // Only treat as continuation if it's not a heading or other block element
+        if (listStack.length > 0 && indentWidth > 0 && !trimmed.match(/^#{1,6}\s/)) {
+          const lastLi = lastLiByLevel[listStack.length - 1];
+          if (lastLi) {
+            lastLi.innerHTML += ' ' + this.formatInlineMarkdown(trimmed);
+            continue;
+          }
+        }
+
         closeAllLists();
         paragraphLines.push(this.formatInlineMarkdown(trimmed));
       }
@@ -562,6 +584,208 @@
       closeAllLists();
       container.appendChild(fragment);
       return container.innerHTML;
+    }
+  };
+
+  // ============================================
+  // Network Utils (Offline detection)
+  // ============================================
+  const networkUtils = {
+    offlineBannerId: 'daily-review-offline-banner',
+    isInitialized: false,
+
+    isOnline() {
+      return navigator.onLine;
+    },
+
+    showOfflineNotice() {
+      if (document.getElementById(this.offlineBannerId)) return;
+
+      const banner = document.createElement('div');
+      banner.id = this.offlineBannerId;
+      banner.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 9999;
+        background-color: #f59e0b;
+        color: white;
+        padding: 12px 20px;
+        text-align: center;
+        font-size: 14px;
+        font-weight: 500;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        animation: slideDown 0.3s ease-out;
+      `;
+      banner.textContent = i18n.t('offline_notice');
+
+      // Add animation
+      const style = document.createElement('style');
+      style.textContent = `
+        @keyframes slideDown {
+          from { transform: translateY(-100%); }
+          to { transform: translateY(0); }
+        }
+      `;
+      document.head.appendChild(style);
+
+      document.body.appendChild(banner);
+    },
+
+    hideOfflineNotice() {
+      const banner = document.getElementById(this.offlineBannerId);
+      if (banner) {
+        banner.style.animation = 'slideUp 0.3s ease-out';
+        setTimeout(() => banner.remove(), 300);
+      }
+    },
+
+    init() {
+      if (this.isInitialized) return;
+      this.isInitialized = true;
+
+      window.addEventListener('online', () => {
+        console.log('Network connection restored');
+        this.hideOfflineNotice();
+      });
+
+      window.addEventListener('offline', () => {
+        console.log('Network connection lost');
+        this.showOfflineNotice();
+      });
+
+      // Show banner if already offline
+      if (!this.isOnline()) {
+        this.showOfflineNotice();
+      }
+    }
+  };
+
+  // ============================================
+  // Storage Utils (Safe localStorage operations)
+  // ============================================
+  const storageUtils = {
+    setItem(key, value) {
+      try {
+        localStorage.setItem(key, value);
+        return true;
+      } catch (e) {
+        if (e.name === 'QuotaExceededError') {
+          console.warn('localStorage quota exceeded, attempting cleanup...');
+          return this.handleQuotaExceeded(key, value);
+        }
+        console.error('Failed to write to localStorage:', e);
+        return false;
+      }
+    },
+
+    handleQuotaExceeded(key, value) {
+      try {
+        // Strategy 1: Clear old deck cache (keep only most recent)
+        const deckStore = this.getItem(CONFIG.CACHE_KEY);
+        if (deckStore) {
+          try {
+            const parsed = JSON.parse(deckStore);
+            if (parsed && parsed.decks && typeof parsed.decks === 'object') {
+              const entries = Object.values(parsed.decks).filter((d) => d && typeof d === 'object');
+              entries.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+              const keep = new Set(entries.slice(0, 3).map((d) => d.key));
+              for (const k of Object.keys(parsed.decks)) {
+                if (!keep.has(k)) delete parsed.decks[k];
+              }
+              localStorage.setItem(CONFIG.CACHE_KEY, JSON.stringify(parsed));
+              console.log('Cleared old deck cache entries');
+
+              // Retry write
+              try {
+                localStorage.setItem(key, value);
+                return true;
+              } catch (retryError) {
+                // Continue to next strategy
+              }
+            }
+          } catch (parseError) {
+            console.error('Failed to parse deck cache during cleanup:', parseError);
+          }
+        }
+
+        // Strategy 2: Clear pool cache
+        if (localStorage.getItem(CONFIG.POOL_KEY)) {
+          localStorage.removeItem(CONFIG.POOL_KEY);
+          console.log('Cleared pool cache');
+
+          // Retry write
+          try {
+            localStorage.setItem(key, value);
+            return true;
+          } catch (retryError) {
+            // Continue to next strategy
+          }
+        }
+
+        // Strategy 3: Aggressively prune history to 1000 items
+        const historyData = this.getItem(CONFIG.HISTORY_KEY);
+        if (historyData) {
+          try {
+            const parsed = JSON.parse(historyData);
+            if (parsed && parsed.items && typeof parsed.items === 'object') {
+              const ids = Object.keys(parsed.items);
+              if (ids.length > 1000) {
+                const entries = ids.map((id) => {
+                  const entry = parsed.items[id] || {};
+                  const day = typeof entry.lastShownDay === 'string' ? entry.lastShownDay : '';
+                  const dayTs = day ? utils.parseLocalDay(day).getTime() : 0;
+                  return { id, dayTs };
+                }).sort((a, b) => a.dayTs - b.dayTs);
+
+                const removeCount = entries.length - 1000;
+                for (let i = 0; i < removeCount; i++) {
+                  delete parsed.items[entries[i].id];
+                }
+                localStorage.setItem(CONFIG.HISTORY_KEY, JSON.stringify(parsed));
+                console.log('Aggressively pruned history to 1000 items');
+
+                // Retry write
+                try {
+                  localStorage.setItem(key, value);
+                  return true;
+                } catch (retryError) {
+                  console.error('Failed to write after all cleanup strategies:', retryError);
+                  return false;
+                }
+              }
+            }
+          } catch (parseError) {
+            console.error('Failed to parse history during cleanup:', parseError);
+          }
+        }
+
+        console.error('All cleanup strategies exhausted, cannot write to localStorage');
+        return false;
+      } catch (cleanupError) {
+        console.error('Error during quota cleanup:', cleanupError);
+        return false;
+      }
+    },
+
+    getItem(key) {
+      try {
+        return localStorage.getItem(key);
+      } catch (e) {
+        console.error('Failed to read from localStorage:', e);
+        return null;
+      }
+    },
+
+    removeItem(key) {
+      try {
+        localStorage.removeItem(key);
+        return true;
+      } catch (e) {
+        console.error('Failed to remove from localStorage:', e);
+        return false;
+      }
     }
   };
 
@@ -585,11 +809,7 @@
     },
 
     save(settings) {
-      try {
-        localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(settings));
-      } catch (e) {
-        console.error('Failed to save daily review settings:', e);
-      }
+      storageUtils.setItem(CONFIG.STORAGE_KEY, JSON.stringify(settings));
     }
   };
 
@@ -614,13 +834,9 @@
 
     // Save batch number for today
     save(batch) {
-      try {
-        const today = utils.getDailySeed();
-        const data = { day: today, batch };
-        localStorage.setItem(CONFIG.BATCH_KEY, JSON.stringify(data));
-      } catch (e) {
-        console.error('Failed to save batch state:', e);
-      }
+      const today = utils.getDailySeed();
+      const data = { day: today, batch };
+      storageUtils.setItem(CONFIG.BATCH_KEY, JSON.stringify(data));
     }
   };
 
@@ -643,11 +859,7 @@
     },
 
     save(history) {
-      try {
-        localStorage.setItem(CONFIG.HISTORY_KEY, JSON.stringify(history));
-      } catch (e) {
-        console.error('Failed to save daily review history:', e);
-      }
+      storageUtils.setItem(CONFIG.HISTORY_KEY, JSON.stringify(history));
     },
 
     prune(history) {
@@ -715,14 +927,10 @@
     },
 
     save(timeRange, memos) {
-      try {
-        localStorage.setItem(
-          CONFIG.POOL_KEY,
-          JSON.stringify({ schemaVersion: CONFIG.DECK_SCHEMA_VERSION, timeRange, memos, timestamp: Date.now() })
-        );
-      } catch (e) {
-        console.error('Failed to save memo pool cache:', e);
-      }
+      storageUtils.setItem(
+        CONFIG.POOL_KEY,
+        JSON.stringify({ schemaVersion: CONFIG.DECK_SCHEMA_VERSION, timeRange, memos, timestamp: Date.now() })
+      );
     }
   };
 
@@ -769,11 +977,7 @@
     },
 
     saveStore(store) {
-      try {
-        localStorage.setItem(CONFIG.CACHE_KEY, JSON.stringify(store));
-      } catch (e) {
-        console.error('Failed to save deck cache:', e);
-      }
+      storageUtils.setItem(CONFIG.CACHE_KEY, JSON.stringify(store));
     },
 
     getDeck(key) {
@@ -811,6 +1015,11 @@
   // ============================================
   const apiService = {
     async fetchMemos(timeRange, pageToken) {
+      // Check network connectivity first
+      if (!networkUtils.isOnline()) {
+        throw new Error('OFFLINE: No network connection');
+      }
+
       const timeRangeConfig = CONFIG.TIME_RANGES.find(t => t.value === timeRange);
       let filter = '';
 
@@ -849,7 +1058,13 @@
         if (!response.ok) {
           throw new Error(`API error: ${response.status}`);
         }
-        const data = await response.json();
+        let data;
+        try {
+          data = await response.json();
+        } catch (jsonError) {
+          console.error('Failed to parse JSON response:', jsonError);
+          throw new Error('Invalid API response format');
+        }
         return { memos: data.memos || [], nextPageToken: data.nextPageToken || data.next_page_token || '' };
       } catch (e) {
         console.error('Failed to fetch memos:', e);
@@ -880,7 +1095,14 @@
             response = await utils.fetchWithTimeout(url, { method: 'PATCH', headers, body, credentials: 'include' }, 8000);
           }
           if (response.ok) {
-            return await response.json();
+            let data;
+            try {
+              data = await response.json();
+            } catch (jsonError) {
+              console.error('Failed to parse JSON response:', jsonError);
+              throw new Error('Invalid API response format');
+            }
+            return data;
           }
           const text = await response.text();
           lastError = new Error(`API error: ${response.status} ${text}`);
@@ -889,6 +1111,28 @@
         }
       }
       throw lastError || new Error('Failed to update memo');
+    },
+
+    async deleteMemo(memoName) {
+      if (!memoName) throw new Error('missing memo name');
+      const url = `/api/v1/${memoName}`;
+      let refreshed = false;
+
+      const doFetch = async () => {
+        const headers = { 'Accept': 'application/json', ...authService.getAuthHeaders() };
+        return utils.fetchWithTimeout(url, { method: 'DELETE', headers, credentials: 'include' }, 8000);
+      };
+
+      let response = await doFetch();
+      if (response.status === 401 && !refreshed) {
+        refreshed = true;
+        await authService.ensureAccessToken();
+        response = await doFetch();
+      }
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`API error: ${response.status} ${text}`);
+      }
     }
   };
 
@@ -961,7 +1205,13 @@
           8000
         );
         if (!response.ok) return null;
-        const data = await response.json();
+        let data;
+        try {
+          data = await response.json();
+        } catch (jsonError) {
+          console.error('Failed to parse JSON response:', jsonError);
+          return null;
+        }
         const message = data && data.message ? data.message : data;
         const token = message?.accessToken || message?.access_token || null;
         const expiresAt = this.parseExpiresAt(message?.expiresAt || message?.expires_at);
@@ -1002,7 +1252,13 @@
         5000
       );
       if (!response.ok) return null;
-      const data = await response.json();
+      let data;
+      try {
+        data = await response.json();
+      } catch (jsonError) {
+        console.error('Failed to parse JSON response:', jsonError);
+        return null;
+      }
       return data && data.user ? data.user : null;
     },
 
@@ -1034,6 +1290,7 @@
     counterId: 'daily-review-counter',
     refreshId: 'daily-review-refresh',
     editId: 'daily-review-edit',
+    deleteId: 'daily-review-delete',
     editOverlayId: 'daily-review-edit-overlay',
     editDialogId: 'daily-review-edit-dialog',
     editTextareaId: 'daily-review-edit-textarea',
@@ -1554,33 +1811,43 @@
         }
         .daily-review-memo-image {
           width: 100%;
-          height: 140px;
-          object-fit: contain;
-          object-position: center;
+          height: 160px;
+          object-fit: cover;
+          object-position: center top;
           display: block;
           transition: box-shadow 0.2s ease;
+          cursor: pointer;
         }
         .daily-review-memo-images.grid-1 .daily-review-memo-image {
-          height: 220px;
+          height: auto;
+          max-height: 400px;
+          aspect-ratio: auto;
+          object-fit: cover;
+          object-position: center top;
         }
         .daily-review-memo-images.grid-2 .daily-review-memo-image {
-          height: 160px;
+          height: 180px;
         }
-        .daily-review-memo-image-link:hover {
-          box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+        .daily-review-memo-image-link {
+          cursor: pointer;
+        }
+        .daily-review-memo-image-link:hover .daily-review-memo-image {
+          opacity: 0.9;
         }
 
         #${this.imageOverlayId} {
           position: fixed;
           inset: 0;
           z-index: 60;
-          background-color: rgba(0, 0, 0, 0.7);
+          background-color: rgba(0, 0, 0, 0.95);
           opacity: 0;
           pointer-events: none;
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: center;
           transition: opacity 0.2s;
+          overflow: auto;
+          padding: 40px 20px;
         }
         #${this.imageOverlayId}.visible {
           opacity: 1;
@@ -1588,66 +1855,81 @@
         }
         #${this.imageDialogId} {
           position: relative;
-          max-width: 92vw;
-          max-height: 86vh;
-          background-color: var(--background);
-          border-radius: 10px;
-          padding: 12px;
-          box-shadow: var(--shadow-lg);
+          max-width: 1200px;
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          margin: auto;
         }
         #${this.imagePreviewId} {
-          max-width: 88vw;
-          max-height: 78vh;
+          max-width: 100%;
+          width: auto;
+          height: auto;
           display: block;
-          border-radius: 8px;
-          background-color: var(--muted);
+          border-radius: 4px;
+          cursor: zoom-in;
+        }
+        #${this.imagePreviewId}.zoomed {
+          cursor: zoom-out;
+          max-width: none;
         }
         #${this.imageCaptionId} {
-          margin-top: 8px;
+          margin-top: 12px;
           text-align: center;
-          font-size: 12px;
-          color: var(--muted-foreground);
+          font-size: 13px;
+          color: rgba(255, 255, 255, 0.8);
+          max-width: 90vw;
         }
         .daily-review-image-nav {
           position: absolute;
           top: 50%;
           transform: translateY(-50%);
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          border: none;
+          background: rgba(255, 255, 255, 0.15);
+          backdrop-filter: blur(10px);
+          color: #fff;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: background 0.2s;
+        }
+        .daily-review-image-nav:hover:not(:disabled) {
+          background: rgba(255, 255, 255, 0.25);
+        }
+        .daily-review-image-nav:disabled {
+          opacity: 0.3;
+          cursor: default;
+        }
+        #${this.imagePrevId} {
+          left: 20px;
+        }
+        #${this.imageNextId} {
+          right: 20px;
+        }
+        #${this.imageCloseId} {
+          position: absolute;
+          top: 20px;
+          right: 20px;
           width: 36px;
           height: 36px;
           border-radius: 50%;
           border: none;
-          background: rgba(0, 0, 0, 0.45);
+          background: rgba(255, 255, 255, 0.15);
+          backdrop-filter: blur(10px);
           color: #fff;
           cursor: pointer;
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: opacity 0.2s;
+          transition: background 0.2s;
         }
-        .daily-review-image-nav:disabled {
-          opacity: 0.35;
-          cursor: default;
-        }
-        #${this.imagePrevId} {
-          left: 10px;
-        }
-        #${this.imageNextId} {
-          right: 10px;
-        }
-        #${this.imageCloseId} {
-          position: absolute;
-          top: 10px;
-          right: 10px;
-          width: 30px;
-          height: 30px;
-          border-radius: 50%;
-          border: none;
-          background: rgba(0, 0, 0, 0.45);
-          color: #fff;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+        #${this.imageCloseId}:hover {
+          background: rgba(255, 255, 255, 0.25);
         }
 
         .daily-review-empty {
@@ -1730,7 +2012,7 @@
       button.title = i18n.t('daily_review');
       button.textContent = i18n.t('daily_review');
       button.style.display = 'none';
-      button.addEventListener('click', () => controller.openDialog());
+      button.addEventListener('click', () => controller.openDialog().catch(err => console.error('Failed to open dialog:', err)));
       document.body.appendChild(button);
     },
 
@@ -1820,6 +2102,15 @@
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
                     </svg>
                   </button>
+                  <button class="daily-review-icon-btn" id="${this.deleteId}" title="${i18n.t('delete_memo')}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+                      <path d="M10 11v6"></path>
+                      <path d="M14 11v6"></path>
+                      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                    </svg>
+                  </button>
                 </div>
                 <div class="daily-review-pager">
                   <button class="daily-review-icon-btn" id="${this.prevId}" title="${i18n.t('previous')}">
@@ -1875,8 +2166,9 @@
       // Bind events
       dialog.querySelector('.daily-review-close').addEventListener('click', () => controller.closeDialog());
       dialog.querySelector('#daily-review-close-btn').addEventListener('click', () => controller.closeDialog());
-      dialog.querySelector(`#${this.refreshId}`).addEventListener('click', () => controller.newBatch());
+      dialog.querySelector(`#${this.refreshId}`).addEventListener('click', () => controller.newBatch().catch(err => console.error('Failed to generate new batch:', err)));
       dialog.querySelector(`#${this.editId}`).addEventListener('click', () => controller.editCurrent());
+      dialog.querySelector(`#${this.deleteId}`).addEventListener('click', () => controller.deleteCurrent());
       dialog.querySelector(`#${this.prevId}`).addEventListener('click', () => controller.prev());
       dialog.querySelector(`#${this.nextId}`).addEventListener('click', () => controller.next());
 
@@ -1890,13 +2182,13 @@
         const settings = settingsService.load();
         settings.timeRange = e.target.value;
         settingsService.save(settings);
-        controller.onSettingsChanged();
+        controller.onSettingsChanged().catch(err => console.error('Settings change failed:', err));
       });
       dialog.querySelector('#daily-review-count').addEventListener('change', (e) => {
         const settings = settingsService.load();
         settings.count = parseInt(e.target.value, 10);
         settingsService.save(settings);
-        controller.onSettingsChanged();
+        controller.onSettingsChanged().catch(err => console.error('Settings change failed:', err));
       });
 
       // Language selector
@@ -1911,7 +2203,7 @@
           if (overlay) overlay.remove();
           if (oldDialog) oldDialog.remove();
           ui.createDialog();
-          controller.openDialog();
+          controller.openDialog().catch(err => console.error('Failed to reopen dialog:', err));
         });
       }
 
@@ -2014,7 +2306,7 @@
       const dialog = document.createElement('div');
       dialog.id = this.imageDialogId;
       dialog.innerHTML = `
-        <img id="${this.imagePreviewId}" alt="">
+        <img id="${this.imagePreviewId}" alt="" title="${i18n.t('click_to_zoom')}">
         <div id="${this.imageCaptionId}"></div>
         <button class="daily-review-image-nav" id="${this.imagePrevId}" title="${i18n.t('previous')}">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2037,6 +2329,13 @@
       dialog.addEventListener('click', (event) => event.stopPropagation());
       overlay.appendChild(dialog);
       document.body.appendChild(overlay);
+
+      // Add zoom functionality
+      const img = document.getElementById(this.imagePreviewId);
+      img.addEventListener('click', (event) => {
+        event.stopPropagation();
+        img.classList.toggle('zoomed');
+      });
 
       document.getElementById(this.imagePrevId).addEventListener('click', (event) => {
         event.stopPropagation();
@@ -2139,7 +2438,9 @@
       const createTime = utils.toTimeMs(memo.createTime, Date.now());
       const rawContent = memo.content || '';
       const memoKey = memo.id || utils.getMemoId(memo) || `memo-${Math.random().toString(36).slice(2)}`;
-      const tags = Array.isArray(memo.tags) ? memo.tags : utils.extractTags(rawContent);
+      const tags = Array.isArray(memo.tags) && memo.tags.length > 0
+        ? memo.tags
+        : utils.extractTags(rawContent); // Fallback only if tags missing
       const contentWithoutTags = utils.removeTagsFromContent(rawContent);
       const htmlContent = utils.markdownToHtml(contentWithoutTags);
 
@@ -2201,6 +2502,12 @@
         edit.title = editable ? i18n.t('edit_memo') : i18n.t('edit_not_supported');
       }
 
+      const del = document.getElementById(this.deleteId);
+      if (del) {
+        del.disabled = !memo.name;
+        del.title = i18n.t('delete_memo');
+      }
+
       this.bindImagePreview();
     },
 
@@ -2243,8 +2550,12 @@
 
     closeImagePreview() {
       const overlay = document.getElementById(this.imageOverlayId);
+      const img = document.getElementById(this.imagePreviewId);
       if (overlay) {
         overlay.classList.remove('visible');
+      }
+      if (img) {
+        img.classList.remove('zoomed');
       }
       this.activeImageKey = null;
       this.activeImageIndex = 0;
@@ -2257,6 +2568,13 @@
       const nextIndex = this.activeImageIndex + step;
       if (nextIndex < 0 || nextIndex >= images.length) return;
       this.activeImageIndex = nextIndex;
+
+      // Reset zoom when navigating
+      const img = document.getElementById(this.imagePreviewId);
+      if (img) {
+        img.classList.remove('zoomed');
+      }
+
       this.updateImagePreview();
     },
 
@@ -2300,20 +2618,24 @@
     keydownHandler: null,
 
     init() {
-      if (window.__dailyReviewInitialized) return;
-      window.__dailyReviewInitialized = true;
+      try {
+        if (window.__dailyReviewInitialized) return;
+        window.__dailyReviewInitialized = true;
 
-      ui.injectStyles();
-      ui.createFloatingButton();
-      ui.createDialog();
-      ui.createImagePreview();
-      ui.createEditDialog();
+        ui.injectStyles();
+        ui.createFloatingButton();
+        ui.createDialog();
+        ui.createImagePreview();
+        ui.createEditDialog();
 
-      this.updateEntryVisibility();
-      this.patchRouteEvents();
-      window.addEventListener('popstate', () => this.updateEntryVisibility());
-      window.addEventListener('daily-review-routechange', () => this.updateEntryVisibility());
-      this.bindKeyboardShortcuts();
+        this.updateEntryVisibility();
+        this.patchRouteEvents();
+        window.addEventListener('popstate', () => this.updateEntryVisibility());
+        window.addEventListener('daily-review-routechange', () => this.updateEntryVisibility());
+        this.bindKeyboardShortcuts();
+      } catch (error) {
+        console.error('Failed to initialize Daily Review plugin:', error);
+      }
     },
 
     bindKeyboardShortcuts() {
@@ -2392,7 +2714,12 @@
       this.deckMemos = [];
       this.viewedInSession = new Set();
       ui.showDialog();
-      this.loadDeck();
+      try {
+        await this.loadDeck();
+      } catch (error) {
+        console.error('Failed to open dialog:', error);
+        ui.setReviewState('error', i18n.t('load_failed'));
+      }
     },
 
     closeDialog() {
@@ -2430,24 +2757,81 @@
       }
     },
 
-    onSettingsChanged() {
+    async onSettingsChanged() {
       // Reset batch to 0 when settings change
       this.deckBatch = 0;
       batchService.save(this.deckBatch);
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
-      this.loadDeck(true);
+      try {
+        await this.loadDeck(true);
+      } catch (error) {
+        console.error('Failed to reload deck after settings change:', error);
+        ui.setReviewState('error', i18n.t('load_failed'));
+      }
     },
 
-    newBatch() {
+    async newBatch() {
       this.deckBatch += 1;
       // Save batch state to localStorage
       batchService.save(this.deckBatch);
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
-      this.loadDeck(true);
+      try {
+        await this.loadDeck(true);
+      } catch (error) {
+        console.error('Failed to generate new batch:', error);
+        ui.setReviewState('error', i18n.t('load_failed'));
+      }
+    },
+
+    async deleteCurrent() {
+      if (!this.deckMemos.length) return;
+      const memo = this.deckMemos[this.deckIndex];
+      if (!memo || !memo.name) return;
+
+      if (!confirm(i18n.t('delete_confirm'))) return;
+
+      const delBtn = document.getElementById(ui.deleteId);
+      if (delBtn) delBtn.disabled = true;
+
+      try {
+        await apiService.deleteMemo(memo.name);
+
+        // Remove from deck
+        this.deckMemos.splice(this.deckIndex, 1);
+
+        // Remove from pool cache (best-effort)
+        const settings = settingsService.load();
+        const pool = poolService.load(settings.timeRange);
+        if (pool && Array.isArray(pool)) {
+          const idx = pool.findIndex((m) => m && m.id === memo.id);
+          if (idx >= 0) {
+            pool.splice(idx, 1);
+            poolService.save(settings.timeRange, pool);
+          }
+        }
+
+        // Clear deck cache to ensure deleted memo doesn't appear in future decks
+        deckService.clear();
+
+        if (this.deckMemos.length === 0) {
+          ui.showCard(null, 0, 0);
+          return;
+        }
+
+        // Stay at same index, or step back if we were at the end
+        if (this.deckIndex >= this.deckMemos.length) {
+          this.deckIndex = this.deckMemos.length - 1;
+        }
+        ui.showCard(this.deckMemos[this.deckIndex], this.deckIndex, this.deckMemos.length);
+      } catch (e) {
+        console.error('Failed to delete memo:', e);
+        alert(i18n.t('delete_failed'));
+        if (delBtn) delBtn.disabled = false;
+      }
     },
 
     editCurrent() {
@@ -2693,12 +3077,18 @@
         // Optimized: Find min/max in O(n) instead of sorting in O(n log n)
         let oldest = memos[0];
         let newest = memos[0];
+        let oldestTime = utils.toTimeMs(oldest.createTime, 0);
+        let newestTime = utils.toTimeMs(newest.createTime, 0);
         for (const memo of memos) {
           const t = utils.toTimeMs(memo.createTime, 0);
-          const oldestTime = utils.toTimeMs(oldest.createTime, 0);
-          const newestTime = utils.toTimeMs(newest.createTime, 0);
-          if (t < oldestTime) oldest = memo;
-          if (t > newestTime) newest = memo;
+          if (t < oldestTime) {
+            oldest = memo;
+            oldestTime = t;
+          }
+          if (t > newestTime) {
+            newest = memo;
+            newestTime = t;
+          }
         }
         if (!oldest || !newest || oldest.id === newest.id) continue;
         const tie = utils.stringToSeed(`${seedPrefix}-tag-${tag}`);
@@ -2796,7 +3186,12 @@
         this.markViewedCurrent();
       } catch (error) {
         console.error('Failed to load daily review deck:', error);
-        ui.setReviewState('error', i18n.t('load_failed'));
+        // Check if error is due to offline status
+        if (error.message && error.message.includes('OFFLINE')) {
+          ui.setReviewState('error', i18n.t('offline_error'));
+        } else {
+          ui.setReviewState('error', i18n.t('load_failed'));
+        }
       }
     }
   };
@@ -2807,12 +3202,27 @@
   // Initialize i18n
   i18n.init();
 
+  // Initialize network utils
+  networkUtils.init();
+
   // Wait for DOM to be ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-      setTimeout(() => controller.init(), 500);
+      setTimeout(() => {
+        try {
+          controller.init();
+        } catch (error) {
+          console.error('Failed to initialize Daily Review plugin:', error);
+        }
+      }, 500);
     });
   } else {
-    setTimeout(() => controller.init(), 500);
+    setTimeout(() => {
+      try {
+        controller.init();
+      } catch (error) {
+        console.error('Failed to initialize Daily Review plugin:', error);
+      }
+    }, 500);
   }
 })();
