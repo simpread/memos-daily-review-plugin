@@ -74,7 +74,7 @@ The plugin is an IIFE (Immediately Invoked Function Expression) with the followi
     save,                   // Save review history
     markViewed,             // Record memo view
     getDaysSinceShown,      // Calculate days since last view
-    prune,                  // LRU pruning (max 5000 items)
+    prune,                  // LRU pruning (max 3000 items, soft limit 2500, target 2000)
   };
 
   // Pool/Deck Cache Services
@@ -300,7 +300,7 @@ container.appendChild(fragment);
 **Caching Strategy**:
 - **Pool**: TTL 6 hours, adaptive target size + early-stop policy
 - **Deck**: Cached by key `day-timeRange-count-batch`, keeps last 10
-- **History**: Max 5000 entries, LRU eviction by "longest unseen"
+- **History**: Max 3000 entries (hard limit), soft limit 2500 triggers cleanup to 2000 target, LRU eviction by "longest unseen", proactive monitoring every 60 seconds
 - **Capabilities**: TTL + refresh cooldown to avoid repeated unsupported endpoint probing
 
 ---
@@ -410,7 +410,10 @@ All styles are injected as a single `<style>` tag. Modify CSS rules directly.
 ```javascript
 POOL_TTL_MS: 6 * 60 * 60 * 1000,  // Pool cache TTL (6 hours)
 NO_REPEAT_DAYS: 3,                 // Deduplication days
-HISTORY_MAX_ITEMS: 5000,           // Max history entries
+HISTORY_MAX_ITEMS: 3000,           // Max history entries (hard limit)
+HISTORY_SOFT_LIMIT: 2500,          // Soft limit triggers cleanup
+HISTORY_CLEANUP_TARGET: 2000,      // Target size after cleanup
+STORAGE_CHECK_INTERVAL_MS: 60000,  // Storage monitor interval (60 seconds)
 POOL_MAX_PAGES_ALL: 6,             // All-time max pages
 POOL_FETCH_TIME_BUDGET_MS: 4000,   // Early-stop time budget
 DIVERSITY_PENALTY_ENABLED: true,   // Diversity penalty switch

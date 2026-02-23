@@ -250,6 +250,7 @@
   const motionUtils = {
     prefersReducedMotion() {
       if (typeof window === 'undefined') return false;
+      if (typeof window.matchMedia !== 'function') return false;
       const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
       return mediaQuery.matches;
     },
@@ -905,7 +906,14 @@
         this.handlers.set(key, []);
       }
       this.handlers.get(key).push({ element, event, handler, options });
-      element.addEventListener(event, handler, options);
+
+      // Compatibility: Use addEventListener if available, fallback to addListener for legacy MediaQueryList
+      if (typeof element.addEventListener === 'function') {
+        element.addEventListener(event, handler, options);
+      } else if (typeof element.addListener === 'function') {
+        // Legacy MediaQueryList API (Safari 5-9, older WebKit)
+        element.addListener(handler);
+      }
     },
 
     unregister(key) {
@@ -915,6 +923,9 @@
       for (const { element, event, handler, options } of entries) {
         if (element && typeof element.removeEventListener === 'function') {
           element.removeEventListener(event, handler, options);
+        } else if (element && typeof element.removeListener === 'function') {
+          // Legacy MediaQueryList API (Safari 5-9, older WebKit)
+          element.removeListener(handler);
         }
       }
       this.handlers.delete(key);
@@ -3794,6 +3805,11 @@
           };
           cleanupService.register('global', motionQuery, 'change', handleMotionChange);
         }
+
+        // Clean up storage monitor on page unload
+        cleanupService.register('global', window, 'beforeunload', () => {
+          storageMonitor.stop();
+        });
 
         this.bindKeyboardShortcuts();
       } catch (error) {
