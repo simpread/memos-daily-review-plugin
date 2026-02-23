@@ -2064,6 +2064,13 @@
           display: flex;
           flex-direction: column;
           overflow: hidden;
+          transform: scale(0.95);
+          opacity: 0;
+          transition: transform 0.2s, opacity 0.2s;
+        }
+        #${this.editOverlayId}.visible #${this.editDialogId} {
+          transform: scale(1);
+          opacity: 1;
         }
         .daily-review-edit-header {
           padding: 12px 16px;
@@ -2083,6 +2090,13 @@
           color: var(--muted-foreground);
           text-align: right;
           flex: 1;
+          transition: color 0.2s;
+        }
+        .daily-review-edit-status.success {
+          color: rgb(34, 197, 94);
+        }
+        .daily-review-edit-status.error {
+          color: rgb(239, 68, 68);
         }
         .daily-review-edit-textarea {
           width: 100%;
@@ -2097,6 +2111,10 @@
           font-size: 14px;
           line-height: 1.6;
           font-family: var(--font-mono);
+          transition: box-shadow 0.2s;
+        }
+        .daily-review-edit-textarea:focus {
+          box-shadow: inset 0 0 0 2px var(--primary);
         }
         .daily-review-edit-footer {
           padding: 12px 16px;
@@ -2835,9 +2853,16 @@
       return textarea ? textarea.value : '';
     },
 
-    setEditStatus(message) {
+    setEditStatus(message, type) {
       const status = document.getElementById(this.editStatusId);
-      if (status) status.textContent = message || '';
+      if (!status) return;
+      status.textContent = message || '';
+      status.classList.remove('success', 'error');
+      if (type === 'success') {
+        status.classList.add('success');
+      } else if (type === 'error') {
+        status.classList.add('error');
+      }
     },
 
     setEditorSaving(isSaving) {
@@ -2845,7 +2870,15 @@
       const save = document.getElementById(this.editSaveId);
       const cancel = document.getElementById(this.editCancelId);
       if (textarea) textarea.disabled = !!isSaving;
-      if (save) save.disabled = !!isSaving;
+      if (save) {
+        save.disabled = !!isSaving;
+        if (isSaving) {
+          save.dataset.originalText = save.textContent;
+          save.textContent = '⏳ ' + (i18n.t('saving') || 'Saving...');
+        } else if (save.dataset.originalText) {
+          save.textContent = save.dataset.originalText;
+        }
+      }
       if (cancel) cancel.disabled = !!isSaving;
     },
 
@@ -3491,16 +3524,17 @@
         }
 
         ui.renderDeck(this.deckMemos, this.deckIndex);
-        ui.closeEditor();
+        ui.setEditStatus(i18n.t('save_success') || '✓ Saved', 'success');
+        setTimeout(() => ui.closeEditor(), 500);
       } catch (e) {
         console.error('Failed to update memo:', e);
         const msg = String(e && e.message ? e.message : e);
         if (msg.includes('401') || msg.includes('Unauthenticated') || msg.includes('authentication')) {
-          ui.setEditStatus(i18n.t('save_failed_auth'));
+          ui.setEditStatus(i18n.t('save_failed_auth'), 'error');
         } else if (msg.includes('403') || msg.includes('PermissionDenied') || msg.includes('permission')) {
-          ui.setEditStatus(i18n.t('save_failed_permission'));
+          ui.setEditStatus(i18n.t('save_failed_permission'), 'error');
         } else {
-          ui.setEditStatus(i18n.t('save_failed_retry'));
+          ui.setEditStatus(i18n.t('save_failed_retry'), 'error');
         }
       } finally {
         this.isSavingEdit = false;
