@@ -2429,12 +2429,26 @@
 
         .daily-review-empty {
           text-align: center;
-          padding: 40px 20px;
+          padding: 60px 20px;
           color: var(--muted-foreground);
+          animation: daily-review-fade-in 0.3s ease;
         }
         .daily-review-empty-icon {
-          font-size: 48px;
-          margin-bottom: 12px;
+          font-size: 64px;
+          margin-bottom: 16px;
+          opacity: 0.8;
+        }
+        .daily-review-empty-title {
+          font-size: 16px;
+          font-weight: 600;
+          color: var(--foreground);
+          margin-bottom: 8px;
+        }
+        .daily-review-empty-hint {
+          font-size: 13px;
+          line-height: 1.5;
+          max-width: 320px;
+          margin: 0 auto;
         }
 
         .daily-review-loading {
@@ -3025,9 +3039,11 @@
         `;
       } else if (type === 'empty') {
         state.innerHTML = `
-          <div style="font-size: 22px;">📝</div>
-          <div>${i18n.t('empty_state')}</div>
-          <div style="font-size: 13px;">${i18n.t('empty_hint')}</div>
+          <div class="daily-review-empty">
+            <div class="daily-review-empty-icon">📝</div>
+            <div class="daily-review-empty-title">${i18n.t('empty_state')}</div>
+            <div class="daily-review-empty-hint">${i18n.t('empty_hint')}</div>
+          </div>
         `;
       } else if (type === 'error') {
         state.innerHTML = `<div>${utils.escapeHtml(message || i18n.t('load_failed'))}</div>`;
