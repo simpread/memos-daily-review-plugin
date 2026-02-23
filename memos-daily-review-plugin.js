@@ -1600,7 +1600,7 @@
           const refreshed = await this.ensureAccessToken(true);
           if (!refreshed) {
             this.writeAccessToken(null);
-            return null;
+            continue;
           }
           response = await doFetch(endpoint);
           if (!response) continue;
@@ -3380,7 +3380,7 @@
         : this.estimateDesiredPoolSize(timeRange, CONFIG.DEFAULT_COUNT);
       const maxPages = timeRange === 'all' ? CONFIG.POOL_MAX_PAGES_ALL : CONFIG.POOL_MAX_PAGES_SCOPED;
       const cached = poolService.load(timeRange);
-      if (cached && cached.length >= desiredSize) return cached;
+      if (cached && cached.length > 0) return cached;
 
       const normalized = [];
       const seen = new Set();
