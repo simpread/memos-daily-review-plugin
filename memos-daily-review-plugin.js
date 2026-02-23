@@ -3033,6 +3033,7 @@
     currentDeckKey: '',
     isSavingEdit: false,
     keydownHandler: null,
+    loadingTimer: null,
 
     init() {
       try {
@@ -3688,6 +3689,12 @@
       const key = deckService.makeKey(today, settings.timeRange, settings.count, this.deckBatch);
       this.currentDeckKey = key;
 
+      // Clear any pending loading timer
+      if (this.loadingTimer) {
+        clearTimeout(this.loadingTimer);
+        this.loadingTimer = null;
+      }
+
       if (!forceRegenerate) {
         const cached = deckService.getDeck(key);
         if (deckService.isValid(cached, key)) {
@@ -3699,12 +3706,22 @@
         }
       }
 
-      ui.setReviewState('loading');
+      // Delay showing loading state by 200ms to avoid flicker on fast loads
+      this.loadingTimer = setTimeout(() => {
+        ui.setReviewState('loading');
+        this.loadingTimer = null;
+      }, 200);
 
       try {
         const desiredPoolSize = this.estimateDesiredPoolSize(settings.timeRange, settings.count);
         const pool = await this.getPoolMemos(settings.timeRange, desiredPoolSize);
         const deckMemos = this.buildDeckFromPool(pool, settings, today, this.deckBatch);
+
+        // Clear loading timer if still pending
+        if (this.loadingTimer) {
+          clearTimeout(this.loadingTimer);
+          this.loadingTimer = null;
+        }
 
         if (deckMemos.length === 0) {
           ui.setReviewState('empty');
@@ -3728,6 +3745,12 @@
         ui.renderDeck(this.deckMemos, this.deckIndex);
         this.markViewedCurrent();
       } catch (error) {
+        // Clear loading timer on error
+        if (this.loadingTimer) {
+          clearTimeout(this.loadingTimer);
+          this.loadingTimer = null;
+        }
+
         console.error('Failed to load daily review deck:', error);
 
         // Determine specific error message based on error type
