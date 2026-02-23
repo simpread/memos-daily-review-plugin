@@ -4,7 +4,7 @@
 
 ```
 memos-daily-review-plugin/
-├── memos-daily-review-plugin.js    # Main plugin (~2700 lines, single-file)
+├── memos-daily-review-plugin.js    # Main plugin (~4200 lines, single-file)
 ├── README.md                       # User documentation (English)
 ├── CONTRIBUTING.md                 # Development guide (English)
 ├── CLAUDE.md                       # This file
@@ -35,6 +35,13 @@ The plugin is an IIFE (Immediately Invoked Function Expression) with the followi
   // Precompiled Regex Patterns
   const REGEX_PATTERNS = { /* heading, list, inline formatting */ };
 
+  // Internationalization
+  const i18n = {
+    detectLanguage,         // Auto-detect browser language
+    t,                      // Translate key to current language
+    formatDate,             // Format date with locale
+  };
+
   // Utility Functions
   const utils = {
     getDailySeed,           // Date-based seed generation
@@ -45,6 +52,13 @@ The plugin is an IIFE (Immediately Invoked Function Expression) with the followi
     normalizeMemo,          // Normalize API memo shape
     extractTags,            // Tag extraction from content
     // ... more utilities
+  };
+
+  // Storage Utilities
+  const storageUtils = {
+    setItem,                // Safe localStorage write with quota cleanup
+    getItem,                // Safe localStorage read
+    removeItem,             // Safe localStorage remove
   };
 
   // Settings Service
@@ -96,13 +110,14 @@ The plugin is an IIFE (Immediately Invoked Function Expression) with the followi
 
   // UI Components
   const ui = {
-    injectStyles,           // Inject CSS (uses Memos CSS variables)
+    injectStyles,           // Inject CSS (uses Memos CSS variables + animations)
     createFloatingButton,   // Create bottom-right button
-    createDialog,           // Create modal dialog
-    renderDeck,             // Render memo card by deck index
-    createImagePreview,     // Create image preview overlay
-    createEditDialog,       // Create edit modal
+    createDialog,           // Create modal dialog with tooltips
+    renderDeck,             // Render memo card by deck index with animations
+    createImagePreview,     // Create image preview overlay with transitions
+    createEditDialog,       // Create edit modal with visual feedback
     bindImagePreview,       // Event delegation for images
+    setReviewState,         // Set loading/empty/error state with animations
     // ... more UI methods
   };
 
@@ -119,9 +134,9 @@ The plugin is an IIFE (Immediately Invoked Function Expression) with the followi
     getDiversityPenalty,    // Diversity penalty for dense clusters
     findSparkPair,          // Find spark pair (O(n) algorithm)
     buildDeckFromPool,      // Generate final deck
-    prev, next, newBatch,   // Navigation and reshuffle
-    editCurrent, saveEditor,// Edit current memo
-    deleteCurrent,          // Delete current memo
+    prev, next, newBatch,   // Navigation and reshuffle with slide animations
+    editCurrent, saveEditor,// Edit current memo with visual feedback
+    deleteCurrent,          // Delete current memo with fade-out animation
   };
 
   // Entry Point + optional test hooks
@@ -329,6 +344,20 @@ Uses Memos CSS variables for theme compatibility:
 - `--radius` - Border radius
 - `--shadow-lg` - Shadow
 
+**UI Enhancements (v2.0)**:
+- **Animations**: Smooth transitions for card switching, loading, and deletion
+  - Fade-in/fade-out for batch changes and deletions
+  - Slide animations (left/right) for prev/next navigation
+  - Spin animation for loading spinner
+  - Scale animation for counter updates
+- **Tooltips**: All icon buttons have `title` attributes for accessibility
+- **Empty State**: Improved design with icon, title, and hint text
+- **Loading State**: Animated spinner with visual feedback
+- **Mobile Responsive**: Optimized layout for screens < 640px
+  - Larger touch targets (44px buttons)
+  - Vertical action bar layout
+  - Adjusted spacing and font sizes
+
 ---
 
 ## Modification Guide
@@ -359,9 +388,20 @@ COUNT_OPTIONS: [4, 8, 12, 16, 20, 24],  // Add new count here
 
 ### Modify Styles
 
-**Location**: Lines 820-1100 (`ui.injectStyles()`)
+**Location**: Lines 1600-2650 (`ui.injectStyles()`)
 
 All styles are injected as a single `<style>` tag. Modify CSS rules directly.
+
+**Key Animation Keyframes**:
+- `@keyframes daily-review-fade-in` - Fade in effect
+- `@keyframes daily-review-fade-out` - Fade out effect
+- `@keyframes daily-review-spin` - Rotation for loading spinner
+- `@keyframes daily-review-slide-in-left` - Slide in from left
+- `@keyframes daily-review-slide-in-right` - Slide in from right
+- `@keyframes daily-review-slide-out-left` - Slide out to left
+- `@keyframes daily-review-slide-out-right` - Slide out to right
+
+**Mobile Responsive Breakpoint**: `@media (max-width: 640px)`
 
 ### Adjust Caching
 
@@ -474,6 +514,7 @@ node --test --test-isolation=none tests/algorithm.test.js
 - Nested list depth inferred from indent width (may not fully comply with CommonMark)
 - Cache is date-based, auto-invalidates across days
 - Button auto-hides on `/auth` routes
+- Animations may be reduced on low-end devices (respects `prefers-reduced-motion`)
 
 ---
 
@@ -483,5 +524,13 @@ For datasets with 1000+ memos:
 - Deck generation: < 100ms
 - Markdown rendering (long docs): < 50ms
 - Memory usage: Stable after 100 card switches
+- Animation performance: 60fps on modern devices
+
+**UI Performance Optimizations (v2.0)**:
+- DocumentFragment for batch DOM insertion
+- Event delegation for image preview
+- CSS transitions instead of JavaScript animations
+- Precompiled regex patterns
+- LRU cache for image groups
 
 Use browser Performance panel for profiling.

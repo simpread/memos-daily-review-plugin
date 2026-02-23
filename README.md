@@ -25,6 +25,8 @@ Automatically recommends a few past memos each day to help you review and spark 
 - **One-Click Review** - Review memos from the past month up to all-time
 - **Daily Variety** - What you see today changes tomorrow
 - **Smart Recommendations** - The longer you haven't seen it, the more likely it appears
+- **Smooth Animations** - Polished UI with fade, slide, and loading transitions
+- **Mobile Optimized** - Responsive design adapts to all screen sizes
 - **Version Compatibility** - Auto-adapts to API differences across Memos versions
 - **Keyboard Shortcuts** - Navigate with arrow keys, Esc to close, Ctrl+Enter to save
 

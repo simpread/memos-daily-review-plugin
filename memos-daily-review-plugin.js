@@ -168,6 +168,7 @@
         'delete_memo': '删除当前 Memo',
         'delete_confirm': '确定要删除这条 Memo 吗？此操作不可撤销。',
         'delete_failed': '删除失败，请稍后重试',
+        'save_success': '保存成功',
         'click_to_zoom': '点击图片可放大查看',
 
         // Description
@@ -225,6 +226,7 @@
         'delete_memo': 'Delete Memo',
         'delete_confirm': 'Are you sure you want to delete this memo? This cannot be undone.',
         'delete_failed': 'Delete failed. Please try again later',
+        'save_success': 'Saved successfully',
         'click_to_zoom': 'Click image to zoom',
 
         // Description
@@ -2030,7 +2032,7 @@
         }
         .daily-review-icon-btn.delete-btn {
           border-color: rgba(239, 68, 68, 0.3);
-          color: rgb(239, 68, 68);
+          color: var(--destructive, rgb(239, 68, 68));
         }
         .daily-review-icon-btn.delete-btn:hover {
           border-color: rgba(239, 68, 68, 0.5);
@@ -2112,10 +2114,10 @@
           transition: color 0.2s;
         }
         .daily-review-edit-status.success {
-          color: rgb(34, 197, 94);
+          color: var(--success, rgb(34, 197, 94));
         }
         .daily-review-edit-status.error {
-          color: rgb(239, 68, 68);
+          color: var(--destructive, rgb(239, 68, 68));
         }
         .daily-review-edit-textarea {
           width: 100%;
@@ -3069,7 +3071,7 @@
       }
     },
 
-    renderDeck(deckMemos, index, skipAnimation) {
+    renderDeck(deckMemos, index) {
       if (!Array.isArray(deckMemos) || deckMemos.length === 0) {
         this.setReviewState('empty');
         return;
@@ -3078,15 +3080,13 @@
       this.setReviewState(null);
       this.renderMemoCard(deckMemos[safeIndex], safeIndex, deckMemos.length);
 
-      // Add fade-in animation for new batch (unless skipped)
-      if (!skipAnimation) {
-        requestAnimationFrame(() => {
-          const cardFront = document.querySelector('.daily-review-card-front');
-          if (cardFront) {
-            cardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
-          }
-        });
-      }
+      // Add fade-in animation for new batch
+      requestAnimationFrame(() => {
+        const cardFront = document.querySelector('.daily-review-card-front');
+        if (cardFront) {
+          cardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
+        }
+      });
     },
 
     renderMemoCard(memo, index, total) {
