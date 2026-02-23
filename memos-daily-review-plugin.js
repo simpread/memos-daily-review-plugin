@@ -31,6 +31,7 @@
     HISTORY_KEY: 'memos-daily-review-history',
     LANGUAGE_KEY: 'memos-daily-review-language',
     BATCH_KEY: 'memos-daily-review-batch',
+    CAPABILITY_KEY: 'memos-daily-review-capabilities',
     AUTH_TOKEN_KEY: 'memos_access_token',
     AUTH_EXPIRES_KEY: 'memos_token_expires_at',
     DEFAULT_TIME_RANGE: '6months',
@@ -44,8 +45,26 @@
     ],
     COUNT_OPTIONS: [4, 8, 12, 16, 20, 24],
     API_PAGE_SIZE: 1000,
+    API_MEMO_ORDER_BY: 'create_time desc',
     POOL_TTL_MS: 6 * 60 * 60 * 1000,
-    POOL_MAX_PAGES_ALL: 2,
+    POOL_MAX_PAGES_ALL: 6,
+    POOL_MAX_PAGES_SCOPED: 3,
+    POOL_TARGET_MULTIPLIER: 6,
+    POOL_MIN_TARGET_ALL: 300,
+    POOL_MIN_TARGET_SCOPED: 120,
+    POOL_FETCH_TIME_BUDGET_MS: 4000,
+    POOL_LOW_YIELD_MAX_STREAK: 2,
+    POOL_MIN_NEW_PER_PAGE: 8,
+    POOL_EARLY_STOP_MIN_RATIO: 0.5,
+    BUCKET_NEWEST_DAYS: 30,
+    BUCKET_MIDDLE_DAYS: 180,
+    DIVERSITY_PENALTY_ENABLED: true,
+    DIVERSITY_LOOKBACK: 4,
+    DIVERSITY_CANDIDATE_WINDOW: 24,
+    DIVERSITY_TAG_WEIGHT: 6,
+    DIVERSITY_TIME_BUCKET_WEIGHT: 1,
+    CAPABILITY_TTL_MS: 24 * 60 * 60 * 1000,
+    REFRESH_RETRY_COOLDOWN_MS: 15 * 60 * 1000,
     NO_REPEAT_DAYS: 3,
     HISTORY_MAX_ITEMS: 5000,
     DECK_SCHEMA_VERSION: 3
@@ -134,11 +153,22 @@
         'empty_state': '没有找到符合条件的 Memo',
         'empty_hint': '尝试调整时间范围或创建更多 Memo',
         'load_failed': '加载失败，请检查网络连接或登录状态',
+        'offline_notice': '网络连接已断开',
+        'offline_error': '无法加载：网络连接已断开',
+        'error_network': '网络错误，请检查连接',
+        'error_server': '服务器错误，请稍后重试',
+        'auth_required': '请先登录后再使用每日回顾',
+        'error_permission': '权限不足',
+        'error_not_found': '内容未找到',
         'edit_not_supported': '当前 Memo 不支持编辑',
         'saving': '保存中…',
         'save_failed_auth': '保存失败：需要登录或无权限',
         'save_failed_permission': '保存失败：无权限',
         'save_failed_retry': '保存失败，请稍后重试',
+        'delete_memo': '删除当前 Memo',
+        'delete_confirm': '确定要删除这条 Memo 吗？此操作不可撤销。',
+        'delete_failed': '删除失败，请稍后重试',
+        'click_to_zoom': '点击图片可放大查看',
 
         // Description
         'single_card_desc': '单张卡片浏览模式，专注于当前内容。可通过左右箭头键或按钮切换。'
@@ -180,11 +210,22 @@
         'empty_state': 'No memos found',
         'empty_hint': 'Try adjusting the time range or create more memos',
         'load_failed': 'Failed to load. Please check your network or login status',
+        'offline_notice': 'You are offline',
+        'offline_error': 'Cannot load: No network connection',
+        'error_network': 'Network error, please check connection',
+        'error_server': 'Server error, please try again later',
+        'auth_required': 'Please sign in to use Daily Review',
+        'error_permission': 'Permission denied',
+        'error_not_found': 'Content not found',
         'edit_not_supported': 'This memo cannot be edited',
         'saving': 'Saving...',
         'save_failed_auth': 'Save failed: Login required',
         'save_failed_permission': 'Save failed: Permission denied',
         'save_failed_retry': 'Save failed. Please try again later',
+        'delete_memo': 'Delete Memo',
+        'delete_confirm': 'Are you sure you want to delete this memo? This cannot be undone.',
+        'delete_failed': 'Delete failed. Please try again later',
+        'click_to_zoom': 'Click image to zoom',
 
         // Description
         'single_card_desc': 'Single card browsing mode. Focus on current content. Use arrow keys or buttons to navigate.'
@@ -392,7 +433,7 @@
 
       // Italic
       html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-      html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+      html = html.replace(/(?<!\w)_(.+?)_(?!\w)/g, '<em>$1</em>');
 
       // Strikethrough
       html = html.replace(/~~(.+?)~~/g, '<del>$1</del>');
@@ -554,6 +595,16 @@
           continue;
         }
 
+        // If we're inside a list and this line is indented (continuation of last li), append to it.
+        // Only treat as continuation if it's not a heading or other block element
+        if (listStack.length > 0 && indentWidth > 0 && !trimmed.match(/^#{1,6}\s/)) {
+          const lastLi = lastLiByLevel[listStack.length - 1];
+          if (lastLi) {
+            lastLi.innerHTML += ' ' + this.formatInlineMarkdown(trimmed);
+            continue;
+          }
+        }
+
         closeAllLists();
         paragraphLines.push(this.formatInlineMarkdown(trimmed));
       }
@@ -562,6 +613,256 @@
       closeAllLists();
       container.appendChild(fragment);
       return container.innerHTML;
+    }
+  };
+
+  // ============================================
+  // Network Utils (Offline detection)
+  // ============================================
+  const networkUtils = {
+    offlineBannerId: 'daily-review-offline-banner',
+    isInitialized: false,
+
+    isOnline() {
+      return navigator.onLine;
+    },
+
+    showOfflineNotice() {
+      if (document.getElementById(this.offlineBannerId)) return;
+
+      const banner = document.createElement('div');
+      banner.id = this.offlineBannerId;
+      banner.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 9999;
+        background-color: #f59e0b;
+        color: white;
+        padding: 12px 20px;
+        text-align: center;
+        font-size: 14px;
+        font-weight: 500;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        animation: slideDown 0.3s ease-out;
+      `;
+      banner.textContent = i18n.t('offline_notice');
+
+      // Add animation
+      const style = document.createElement('style');
+      style.textContent = `
+        @keyframes slideDown {
+          from { transform: translateY(-100%); }
+          to { transform: translateY(0); }
+        }
+      `;
+      document.head.appendChild(style);
+
+      document.body.appendChild(banner);
+    },
+
+    hideOfflineNotice() {
+      const banner = document.getElementById(this.offlineBannerId);
+      if (banner) {
+        banner.style.animation = 'slideUp 0.3s ease-out';
+        setTimeout(() => banner.remove(), 300);
+      }
+    },
+
+    init() {
+      if (this.isInitialized) return;
+      this.isInitialized = true;
+
+      window.addEventListener('online', () => {
+        console.log('Network connection restored');
+        this.hideOfflineNotice();
+      });
+
+      window.addEventListener('offline', () => {
+        console.log('Network connection lost');
+        this.showOfflineNotice();
+      });
+
+      // Show banner if already offline
+      if (!this.isOnline()) {
+        this.showOfflineNotice();
+      }
+    }
+  };
+
+  // ============================================
+  // Retry Utils (Exponential backoff for API calls)
+  // ============================================
+  const retryUtils = {
+    async withRetry(fn, options = {}) {
+      const maxAttempts = options.maxAttempts || 3;
+      const initialDelay = options.initialDelay || 1000;
+      const maxDelay = options.maxDelay || 5000;
+      const backoffFactor = options.backoffFactor || 2;
+
+      let lastError = null;
+      let delay = initialDelay;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          return await fn();
+        } catch (error) {
+          lastError = error;
+
+          // Don't retry on offline errors
+          if (error.message && error.message.includes('OFFLINE')) {
+            throw error;
+          }
+
+          // Don't retry on 4xx errors (except 401 which is handled by auth service)
+          if (error.message && /API error: 4[0-9]{2}/.test(error.message)) {
+            const status = parseInt(error.message.match(/\d{3}/)?.[0] || '0', 10);
+            if (status !== 401) {
+              throw error;
+            }
+          }
+
+          // Last attempt - throw error
+          if (attempt === maxAttempts) {
+            throw error;
+          }
+
+          // Wait before retry with exponential backoff
+          console.log(`Retry attempt ${attempt}/${maxAttempts} after ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay = Math.min(delay * backoffFactor, maxDelay);
+        }
+      }
+
+      throw lastError;
+    }
+  };
+
+  // ============================================
+  // Storage Utils (Safe localStorage operations)
+  // ============================================
+  const storageUtils = {
+    setItem(key, value) {
+      try {
+        localStorage.setItem(key, value);
+        return true;
+      } catch (e) {
+        if (e.name === 'QuotaExceededError') {
+          console.warn('localStorage quota exceeded, attempting cleanup...');
+          return this.handleQuotaExceeded(key, value);
+        }
+        console.error('Failed to write to localStorage:', e);
+        return false;
+      }
+    },
+
+    handleQuotaExceeded(key, value) {
+      try {
+        // Strategy 1: Clear old deck cache (keep only most recent)
+        const deckStore = this.getItem(CONFIG.CACHE_KEY);
+        if (deckStore) {
+          try {
+            const parsed = JSON.parse(deckStore);
+            if (parsed && parsed.decks && typeof parsed.decks === 'object') {
+              const entries = Object.values(parsed.decks).filter((d) => d && typeof d === 'object');
+              entries.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+              const keep = new Set(entries.slice(0, 3).map((d) => d.key));
+              for (const k of Object.keys(parsed.decks)) {
+                if (!keep.has(k)) delete parsed.decks[k];
+              }
+              localStorage.setItem(CONFIG.CACHE_KEY, JSON.stringify(parsed));
+              console.log('Cleared old deck cache entries');
+
+              // Retry write
+              try {
+                localStorage.setItem(key, value);
+                return true;
+              } catch (retryError) {
+                // Continue to next strategy
+              }
+            }
+          } catch (parseError) {
+            console.error('Failed to parse deck cache during cleanup:', parseError);
+          }
+        }
+
+        // Strategy 2: Clear pool cache
+        if (localStorage.getItem(CONFIG.POOL_KEY)) {
+          localStorage.removeItem(CONFIG.POOL_KEY);
+          console.log('Cleared pool cache');
+
+          // Retry write
+          try {
+            localStorage.setItem(key, value);
+            return true;
+          } catch (retryError) {
+            // Continue to next strategy
+          }
+        }
+
+        // Strategy 3: Aggressively prune history to 1000 items
+        const historyData = this.getItem(CONFIG.HISTORY_KEY);
+        if (historyData) {
+          try {
+            const parsed = JSON.parse(historyData);
+            if (parsed && parsed.items && typeof parsed.items === 'object') {
+              const ids = Object.keys(parsed.items);
+              if (ids.length > 1000) {
+                const entries = ids.map((id) => {
+                  const entry = parsed.items[id] || {};
+                  const day = typeof entry.lastShownDay === 'string' ? entry.lastShownDay : '';
+                  const dayTs = day ? utils.parseLocalDay(day).getTime() : 0;
+                  return { id, dayTs };
+                }).sort((a, b) => a.dayTs - b.dayTs);
+
+                const removeCount = entries.length - 1000;
+                for (let i = 0; i < removeCount; i++) {
+                  delete parsed.items[entries[i].id];
+                }
+                localStorage.setItem(CONFIG.HISTORY_KEY, JSON.stringify(parsed));
+                console.log('Aggressively pruned history to 1000 items');
+
+                // Retry write
+                try {
+                  localStorage.setItem(key, value);
+                  return true;
+                } catch (retryError) {
+                  console.error('Failed to write after all cleanup strategies:', retryError);
+                  return false;
+                }
+              }
+            }
+          } catch (parseError) {
+            console.error('Failed to parse history during cleanup:', parseError);
+          }
+        }
+
+        console.error('All cleanup strategies exhausted, cannot write to localStorage');
+        return false;
+      } catch (cleanupError) {
+        console.error('Error during quota cleanup:', cleanupError);
+        return false;
+      }
+    },
+
+    getItem(key) {
+      try {
+        return localStorage.getItem(key);
+      } catch (e) {
+        console.error('Failed to read from localStorage:', e);
+        return null;
+      }
+    },
+
+    removeItem(key) {
+      try {
+        localStorage.removeItem(key);
+        return true;
+      } catch (e) {
+        console.error('Failed to remove from localStorage:', e);
+        return false;
+      }
     }
   };
 
@@ -585,11 +886,7 @@
     },
 
     save(settings) {
-      try {
-        localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(settings));
-      } catch (e) {
-        console.error('Failed to save daily review settings:', e);
-      }
+      storageUtils.setItem(CONFIG.STORAGE_KEY, JSON.stringify(settings));
     }
   };
 
@@ -614,13 +911,9 @@
 
     // Save batch number for today
     save(batch) {
-      try {
-        const today = utils.getDailySeed();
-        const data = { day: today, batch };
-        localStorage.setItem(CONFIG.BATCH_KEY, JSON.stringify(data));
-      } catch (e) {
-        console.error('Failed to save batch state:', e);
-      }
+      const today = utils.getDailySeed();
+      const data = { day: today, batch };
+      storageUtils.setItem(CONFIG.BATCH_KEY, JSON.stringify(data));
     }
   };
 
@@ -643,11 +936,7 @@
     },
 
     save(history) {
-      try {
-        localStorage.setItem(CONFIG.HISTORY_KEY, JSON.stringify(history));
-      } catch (e) {
-        console.error('Failed to save daily review history:', e);
-      }
+      storageUtils.setItem(CONFIG.HISTORY_KEY, JSON.stringify(history));
     },
 
     prune(history) {
@@ -715,14 +1004,10 @@
     },
 
     save(timeRange, memos) {
-      try {
-        localStorage.setItem(
-          CONFIG.POOL_KEY,
-          JSON.stringify({ schemaVersion: CONFIG.DECK_SCHEMA_VERSION, timeRange, memos, timestamp: Date.now() })
-        );
-      } catch (e) {
-        console.error('Failed to save memo pool cache:', e);
-      }
+      storageUtils.setItem(
+        CONFIG.POOL_KEY,
+        JSON.stringify({ schemaVersion: CONFIG.DECK_SCHEMA_VERSION, timeRange, memos, timestamp: Date.now() })
+      );
     }
   };
 
@@ -769,11 +1054,7 @@
     },
 
     saveStore(store) {
-      try {
-        localStorage.setItem(CONFIG.CACHE_KEY, JSON.stringify(store));
-      } catch (e) {
-        console.error('Failed to save deck cache:', e);
-      }
+      storageUtils.setItem(CONFIG.CACHE_KEY, JSON.stringify(store));
     },
 
     getDeck(key) {
@@ -803,6 +1084,145 @@
     isValid(deck, expectedKey) {
       if (!deck || typeof deck.key !== 'string') return false;
       return deck.key === expectedKey && Array.isArray(deck.memos);
+    },
+
+    clear() {
+      storageUtils.removeItem(CONFIG.CACHE_KEY);
+    }
+  };
+
+  // ============================================
+  // Capability Service
+  // ============================================
+  const capabilityService = {
+    state: null,
+
+    getDefaultState() {
+      return {
+        schemaVersion: CONFIG.DECK_SCHEMA_VERSION,
+        timestamp: 0,
+        preferredCurrentUserEndpoint: '',
+        preferredRefreshEndpoint: '',
+        refreshUnsupported: false,
+        refreshUnsupportedAt: 0,
+        updateMaskStyle: '',
+        supportsListFilter: null,
+        supportsListOrderBy: null
+      };
+    },
+
+    loadState() {
+      const fallback = this.getDefaultState();
+      try {
+        const saved = localStorage.getItem(CONFIG.CAPABILITY_KEY);
+        if (!saved) return fallback;
+        const parsed = JSON.parse(saved);
+        if (!parsed || typeof parsed !== 'object') return fallback;
+        const timestamp = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0;
+        if (Date.now() - timestamp > CONFIG.CAPABILITY_TTL_MS) return fallback;
+        return {
+          ...fallback,
+          ...parsed,
+          timestamp
+        };
+      } catch (e) {
+        console.warn('Failed to load capability cache:', e);
+        return fallback;
+      }
+    },
+
+    getState() {
+      if (!this.state) {
+        this.state = this.loadState();
+      }
+      return this.state;
+    },
+
+    saveState(nextState) {
+      this.state = nextState;
+      storageUtils.setItem(CONFIG.CAPABILITY_KEY, JSON.stringify(nextState));
+    },
+
+    remember(patch) {
+      const next = {
+        ...this.getState(),
+        ...patch,
+        timestamp: Date.now(),
+        schemaVersion: CONFIG.DECK_SCHEMA_VERSION
+      };
+      this.saveState(next);
+    },
+
+    getCurrentUserEndpoints(defaults) {
+      const state = this.getState();
+      const preferred = state.preferredCurrentUserEndpoint;
+      if (!preferred) return [...defaults];
+      const result = [preferred];
+      for (const endpoint of defaults) {
+        if (endpoint !== preferred) result.push(endpoint);
+      }
+      return result;
+    },
+
+    markCurrentUserEndpoint(endpoint) {
+      if (!endpoint) return;
+      this.remember({ preferredCurrentUserEndpoint: endpoint });
+    },
+
+    getRefreshEndpoints(defaults) {
+      const state = this.getState();
+      const preferred = state.preferredRefreshEndpoint;
+      if (!preferred) return [...defaults];
+      const result = [preferred];
+      for (const endpoint of defaults) {
+        if (endpoint !== preferred) result.push(endpoint);
+      }
+      return result;
+    },
+
+    markRefreshEndpoint(endpoint) {
+      if (!endpoint) return;
+      this.remember({ preferredRefreshEndpoint: endpoint, refreshUnsupported: false, refreshUnsupportedAt: 0 });
+    },
+
+    markRefreshUnsupported() {
+      this.remember({ refreshUnsupported: true, refreshUnsupportedAt: Date.now(), preferredRefreshEndpoint: '' });
+    },
+
+    canAttemptRefresh() {
+      const state = this.getState();
+      if (!state.refreshUnsupported) return true;
+      const blockedAt = typeof state.refreshUnsupportedAt === 'number' ? state.refreshUnsupportedAt : 0;
+      if (!blockedAt) return true;
+      return Date.now() - blockedAt >= CONFIG.REFRESH_RETRY_COOLDOWN_MS;
+    },
+
+    getUpdateMaskStyles() {
+      const preferred = this.getState().updateMaskStyle;
+      if (preferred === 'snake') return ['snake', 'camel'];
+      if (preferred === 'camel') return ['camel', 'snake'];
+      return ['camel', 'snake'];
+    },
+
+    markUpdateMaskStyle(style) {
+      if (style !== 'camel' && style !== 'snake') return;
+      this.remember({ updateMaskStyle: style });
+    },
+
+    canUseListFilter() {
+      return this.getState().supportsListFilter !== false;
+    },
+
+    canUseListOrderBy() {
+      return this.getState().supportsListOrderBy !== false;
+    },
+
+    markListFilterSupport(supported) {
+      this.remember({ supportsListFilter: !!supported });
+    },
+
+    markListOrderBySupport(supported) {
+      this.remember({ supportsListOrderBy: !!supported });
     }
   };
 
@@ -811,6 +1231,11 @@
   // ============================================
   const apiService = {
     async fetchMemos(timeRange, pageToken) {
+      // Check network connectivity first
+      if (!networkUtils.isOnline()) {
+        throw new Error('OFFLINE: No network connection');
+      }
+
       const timeRangeConfig = CONFIG.TIME_RANGES.find(t => t.value === timeRange);
       let filter = '';
 
@@ -820,41 +1245,66 @@
         filter = `created_ts >= ${startTime}`;
       }
 
-      const params = new URLSearchParams({
-        pageSize: String(CONFIG.API_PAGE_SIZE)
-      });
+      // Wrap in retry logic
+      return await retryUtils.withRetry(async () => {
+        let allowFilter = !!filter && capabilityService.canUseListFilter();
+        let allowOrderBy = capabilityService.canUseListOrderBy();
 
-      if (filter) {
-        params.append('filter', filter);
-      }
-      if (pageToken) {
-        params.append('pageToken', pageToken);
-      }
+        for (let step = 0; step < 3; step++) {
+          const params = new URLSearchParams({
+            pageSize: String(CONFIG.API_PAGE_SIZE),
+            state: 'NORMAL'
+          });
+          if (pageToken) params.append('pageToken', pageToken);
+          if (allowOrderBy) params.append('orderBy', CONFIG.API_MEMO_ORDER_BY);
+          if (allowFilter) params.append('filter', filter);
 
-      try {
-        const doFetch = async () => {
-          const headers = { 'Accept': 'application/json', ...authService.getAuthHeaders() };
-          return await utils.fetchWithTimeout(
-            `/api/v1/memos?${params.toString()}`,
-            { method: 'GET', headers, credentials: 'include' },
-            8000
-          );
-        };
+          const doFetch = async () => {
+            const headers = { 'Accept': 'application/json', ...authService.getAuthHeaders() };
+            return await utils.fetchWithTimeout(
+              `/api/v1/memos?${params.toString()}`,
+              { method: 'GET', headers, credentials: 'include' },
+              8000
+            );
+          };
 
-        let response = await doFetch();
-        if (response.status === 401) {
-          await authService.ensureAccessToken();
-          response = await doFetch();
-        }
-        if (!response.ok) {
+          let response = await doFetch();
+          if (response.status === 401) {
+            await authService.ensureAccessToken();
+            response = await doFetch();
+          }
+
+          if (response.ok) {
+            if (allowFilter) capabilityService.markListFilterSupport(true);
+            if (allowOrderBy) capabilityService.markListOrderBySupport(true);
+            let data;
+            try {
+              data = await response.json();
+            } catch (jsonError) {
+              console.error('Failed to parse JSON response:', jsonError);
+              throw new Error('Invalid API response format');
+            }
+            return { memos: data.memos || [], nextPageToken: data.nextPageToken || data.next_page_token || '' };
+          }
+
+          if (response.status === 400) {
+            if (allowFilter) {
+              allowFilter = false;
+              capabilityService.markListFilterSupport(false);
+              continue;
+            }
+            if (allowOrderBy) {
+              allowOrderBy = false;
+              capabilityService.markListOrderBySupport(false);
+              continue;
+            }
+          }
+
           throw new Error(`API error: ${response.status}`);
         }
-        const data = await response.json();
-        return { memos: data.memos || [], nextPageToken: data.nextPageToken || data.next_page_token || '' };
-      } catch (e) {
-        console.error('Failed to fetch memos:', e);
-        throw e;
-      }
+
+        throw new Error('API error: 400');
+      }, { maxAttempts: 3, initialDelay: 1000 });
     },
 
     async updateMemoContent(memoName, content) {
@@ -862,14 +1312,15 @@
       const urlBase = `/api/v1/${memoName}`;
       const body = JSON.stringify({ name: memoName, content });
       let refreshed = false;
-
-      const candidates = [
-        `${urlBase}?updateMask.paths=content&updateMask.paths=update_time`,
-        `${urlBase}?update_mask.paths=content&update_mask.paths=update_time`
-      ];
+      const styleToUrl = {
+        camel: `${urlBase}?updateMask.paths=content&updateMask.paths=update_time`,
+        snake: `${urlBase}?update_mask.paths=content&update_mask.paths=update_time`
+      };
+      const candidates = capabilityService.getUpdateMaskStyles().map((style) => ({ style, url: styleToUrl[style] }));
 
       let lastError = null;
-      for (const url of candidates) {
+      for (const candidate of candidates) {
+        const { style, url } = candidate;
         try {
           let headers = { 'Content-Type': 'application/json', 'Accept': 'application/json', ...authService.getAuthHeaders() };
           let response = await utils.fetchWithTimeout(url, { method: 'PATCH', headers, body, credentials: 'include' }, 8000);
@@ -880,7 +1331,15 @@
             response = await utils.fetchWithTimeout(url, { method: 'PATCH', headers, body, credentials: 'include' }, 8000);
           }
           if (response.ok) {
-            return await response.json();
+            capabilityService.markUpdateMaskStyle(style);
+            let data;
+            try {
+              data = await response.json();
+            } catch (jsonError) {
+              console.error('Failed to parse JSON response:', jsonError);
+              throw new Error('Invalid API response format');
+            }
+            return data;
           }
           const text = await response.text();
           lastError = new Error(`API error: ${response.status} ${text}`);
@@ -889,6 +1348,28 @@
         }
       }
       throw lastError || new Error('Failed to update memo');
+    },
+
+    async deleteMemo(memoName) {
+      if (!memoName) throw new Error('missing memo name');
+      const url = `/api/v1/${memoName}`;
+      let refreshed = false;
+
+      const doFetch = async () => {
+        const headers = { 'Accept': 'application/json', ...authService.getAuthHeaders() };
+        return utils.fetchWithTimeout(url, { method: 'DELETE', headers, credentials: 'include' }, 8000);
+      };
+
+      let response = await doFetch();
+      if (response.status === 401 && !refreshed) {
+        refreshed = true;
+        await authService.ensureAccessToken();
+        response = await doFetch();
+      }
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`API error: ${response.status} ${text}`);
+      }
     }
   };
 
@@ -897,29 +1378,51 @@
   // ============================================
   const authService = {
     refreshPromise: null,
+    tokenKeys: ['memos_access_token', 'access_token', 'accessToken'],
+    tokenExpiryKeys: ['memos_token_expires_at', 'token_expires_at', 'accessTokenExpiresAt'],
+    currentUserEndpoints: ['/api/v1/auth/sessions/current', '/api/auth/sessions/current', '/api/v1/auth/me', '/api/v1/user/me', '/api/v1/users/me'],
+    legacyAuthStatusEndpoints: ['/api/auth/status', '/api/v1/auth/status'],
+
+    readFromStorage(storage, keys) {
+      try {
+        for (const key of keys) {
+          const value = storage.getItem(key);
+          if (value) return value;
+        }
+      } catch {
+        return null;
+      }
+      return null;
+    },
 
     getAccessToken() {
-      const readToken = (storage) => {
-        try {
-          return storage.getItem(CONFIG.AUTH_TOKEN_KEY);
-        } catch {
-          return null;
-        }
-      };
-      return readToken(sessionStorage) || readToken(localStorage) || null;
+      return this.readFromStorage(sessionStorage, this.tokenKeys) || this.readFromStorage(localStorage, this.tokenKeys) || null;
     },
 
     writeAccessToken(token, expiresAt) {
+      const storages = [sessionStorage, localStorage];
       try {
         if (token) {
-          sessionStorage.setItem(CONFIG.AUTH_TOKEN_KEY, token);
-          if (expiresAt) {
-            sessionStorage.setItem(CONFIG.AUTH_EXPIRES_KEY, expiresAt.toISOString());
+          for (const storage of storages) {
+            for (const key of this.tokenKeys) {
+              storage.setItem(key, token);
+            }
+            if (expiresAt) {
+              for (const key of this.tokenExpiryKeys) {
+                storage.setItem(key, expiresAt.toISOString());
+              }
+            }
           }
           return;
         }
-        sessionStorage.removeItem(CONFIG.AUTH_TOKEN_KEY);
-        sessionStorage.removeItem(CONFIG.AUTH_EXPIRES_KEY);
+        for (const storage of storages) {
+          for (const key of this.tokenKeys) {
+            storage.removeItem(key);
+          }
+          for (const key of this.tokenExpiryKeys) {
+            storage.removeItem(key);
+          }
+        }
       } catch (e) {
         // ignore storage errors
       }
@@ -945,36 +1448,98 @@
     },
 
     async refreshAccessTokenViaConnect() {
-      try {
-        const response = await utils.fetchWithTimeout(
-          '/memos.api.v1.AuthService/RefreshToken',
-          {
-            method: 'POST',
-            credentials: 'include',
-            headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-              'Connect-Protocol-Version': '1'
-            },
-            body: '{}'
+      const endpointMap = {
+        '/api/v1/auth/refresh': {
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
           },
-          8000
-        );
-        if (!response.ok) return null;
-        const data = await response.json();
-        const message = data && data.message ? data.message : data;
-        const token = message?.accessToken || message?.access_token || null;
-        const expiresAt = this.parseExpiresAt(message?.expiresAt || message?.expires_at);
-        this.writeAccessToken(token, expiresAt);
-        return token;
-      } catch (e) {
-        return null;
+          unwrap(data) {
+            return data;
+          }
+        },
+        '/memos.api.v1.AuthService/RefreshToken': {
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1'
+          },
+          unwrap(data) {
+            return data && data.message ? data.message : data;
+          }
+        },
+        '/api/auth/refresh': {
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          unwrap(data) {
+            return data;
+          }
+        }
+      };
+      const defaultEndpoints = [
+        '/api/v1/auth/refresh',
+        '/memos.api.v1.AuthService/RefreshToken',
+        '/api/auth/refresh'
+      ];
+      const endpoints = capabilityService.getRefreshEndpoints(defaultEndpoints);
+      let sawRefreshEndpoint = false;
+      let hadTransportError = false;
+
+      for (const endpointUrl of endpoints) {
+        const endpoint = endpointMap[endpointUrl];
+        if (!endpoint) continue;
+        try {
+          const response = await utils.fetchWithTimeout(
+            endpointUrl,
+            {
+              method: 'POST',
+              credentials: 'include',
+              headers: endpoint.headers,
+              body: '{}'
+            },
+            8000
+          );
+
+          if (response.status === 404 || response.status === 405) {
+            continue;
+          }
+
+          sawRefreshEndpoint = true;
+          capabilityService.markRefreshEndpoint(endpointUrl);
+
+          if (!response.ok) continue;
+
+          let data;
+          try {
+            data = await response.json();
+          } catch (jsonError) {
+            console.error('Failed to parse JSON response:', jsonError);
+            continue;
+          }
+          const message = endpoint.unwrap(data);
+          const token = message?.accessToken || message?.access_token || null;
+          const expiresAt = this.parseExpiresAt(message?.expiresAt || message?.expires_at || message?.accessTokenExpiresAt || message?.access_token_expires_at);
+          this.writeAccessToken(token, expiresAt);
+          if (token) return token;
+        } catch (e) {
+          // Continue to next refresh endpoint.
+          hadTransportError = true;
+        }
       }
+
+      if (!sawRefreshEndpoint && !hadTransportError) {
+        capabilityService.markRefreshUnsupported();
+      }
+
+      return null;
     },
 
-    async ensureAccessToken() {
+    async ensureAccessToken(forceRefresh = false) {
       const token = this.getAccessToken();
-      if (token) return token;
+      if (token && !forceRefresh) return token;
+      if (!capabilityService.canAttemptRefresh()) return null;
       if (this.refreshPromise) return await this.refreshPromise;
       this.refreshPromise = this.refreshAccessTokenViaConnect().finally(() => {
         this.refreshPromise = null;
@@ -989,29 +1554,137 @@
     },
 
     async getCurrentUser() {
-      const token = this.getAccessToken();
-      if (!token) return null;
-      const response = await utils.fetchWithTimeout(
-        '/api/v1/auth/me',
-        {
-          method: 'GET',
-          cache: 'no-store',
-          credentials: 'include',
-          headers: { 'Accept': 'application/json', ...this.getAuthHeaders() }
-        },
-        5000
-      );
-      if (!response.ok) return null;
-      const data = await response.json();
-      return data && data.user ? data.user : null;
+      const parseUserPayload = (data) => {
+        if (!data || typeof data !== 'object') return null;
+        if (data.user && typeof data.user === 'object') return data.user;
+        if (data.data && typeof data.data === 'object') {
+          if (data.data.user && typeof data.data.user === 'object') return data.data.user;
+          if (typeof data.data.name === 'string' || typeof data.data.username === 'string') return data.data;
+        }
+        if (typeof data.name === 'string' || typeof data.username === 'string') return data;
+        return null;
+      };
+
+      const doFetch = async (url) => {
+        try {
+          return await utils.fetchWithTimeout(
+            url,
+            {
+              method: 'GET',
+              cache: 'no-store',
+              credentials: 'include',
+              headers: { 'Accept': 'application/json', ...this.getAuthHeaders() }
+            },
+            5000
+          );
+        } catch (e) {
+          return null;
+        }
+      };
+
+      let hasTriedRefresh = false;
+      let hadSuccessfulAuthResponse = false;
+      const currentUserEndpoints = capabilityService.getCurrentUserEndpoints(this.currentUserEndpoints);
+
+      for (const endpoint of currentUserEndpoints) {
+        let response = await doFetch(endpoint);
+        if (!response) continue;
+
+        if (response.status === 404 || response.status === 405) continue;
+        capabilityService.markCurrentUserEndpoint(endpoint);
+
+        if (response.status === 401) {
+          if (hasTriedRefresh) continue;
+          hasTriedRefresh = true;
+          // Existing token may be stale after sign-out/sign-in cycles.
+          const refreshed = await this.ensureAccessToken(true);
+          if (!refreshed) {
+            this.writeAccessToken(null);
+            continue;
+          }
+          response = await doFetch(endpoint);
+          if (!response) continue;
+          if (response.status === 404 || response.status === 405) continue;
+        }
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            this.writeAccessToken(null);
+          }
+          continue;
+        }
+        hadSuccessfulAuthResponse = true;
+
+        let data;
+        try {
+          data = await response.json();
+        } catch (jsonError) {
+          console.error('Failed to parse JSON response:', jsonError);
+          continue;
+        }
+
+        const user = parseUserPayload(data);
+        if (user) return user;
+      }
+
+      // Legacy compatibility: older Memos versions expose auth status via /api/auth/status.
+      for (const legacyEndpoint of this.legacyAuthStatusEndpoints) {
+        for (const method of ['POST', 'GET']) {
+          try {
+            const requestOptions = {
+              method,
+              cache: 'no-store',
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+              }
+            };
+            if (method === 'POST') {
+              requestOptions.body = '{}';
+            }
+            const legacyResponse = await utils.fetchWithTimeout(
+              legacyEndpoint,
+              requestOptions,
+              5000
+            );
+            if (!legacyResponse.ok) {
+              // If method not allowed, try the other method for this endpoint.
+              if (legacyResponse.status === 405) continue;
+              break;
+            }
+            hadSuccessfulAuthResponse = true;
+            let legacyData;
+            try {
+              legacyData = await legacyResponse.json();
+            } catch (jsonError) {
+              console.error('Failed to parse JSON response:', jsonError);
+              break;
+            }
+            const legacyUser = parseUserPayload(legacyData);
+            if (legacyUser) return legacyUser;
+          } catch (e) {
+            // Ignore legacy endpoint failures.
+          }
+        }
+      }
+
+      if (hadSuccessfulAuthResponse) {
+        return { authenticated: true };
+      }
+
+      return null;
     },
 
     async isAuthenticated() {
       try {
         const user = await this.getCurrentUser();
-        return !!user;
+        if (user) return true;
+        // Fallback: if token exists but user endpoint is incompatible/unavailable,
+        // allow entry and let downstream API calls surface real auth errors.
+        return !!this.getAccessToken();
       } catch (e) {
-        return false;
+        return !!this.getAccessToken();
       }
     }
   };
@@ -1034,6 +1707,7 @@
     counterId: 'daily-review-counter',
     refreshId: 'daily-review-refresh',
     editId: 'daily-review-edit',
+    deleteId: 'daily-review-delete',
     editOverlayId: 'daily-review-edit-overlay',
     editDialogId: 'daily-review-edit-dialog',
     editTextareaId: 'daily-review-edit-textarea',
@@ -1554,33 +2228,43 @@
         }
         .daily-review-memo-image {
           width: 100%;
-          height: 140px;
-          object-fit: contain;
-          object-position: center;
+          height: 160px;
+          object-fit: cover;
+          object-position: center top;
           display: block;
           transition: box-shadow 0.2s ease;
+          cursor: pointer;
         }
         .daily-review-memo-images.grid-1 .daily-review-memo-image {
-          height: 220px;
+          height: auto;
+          max-height: 400px;
+          aspect-ratio: auto;
+          object-fit: cover;
+          object-position: center top;
         }
         .daily-review-memo-images.grid-2 .daily-review-memo-image {
-          height: 160px;
+          height: 180px;
         }
-        .daily-review-memo-image-link:hover {
-          box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+        .daily-review-memo-image-link {
+          cursor: pointer;
+        }
+        .daily-review-memo-image-link:hover .daily-review-memo-image {
+          opacity: 0.9;
         }
 
         #${this.imageOverlayId} {
           position: fixed;
           inset: 0;
           z-index: 60;
-          background-color: rgba(0, 0, 0, 0.7);
+          background-color: rgba(0, 0, 0, 0.95);
           opacity: 0;
           pointer-events: none;
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: center;
           transition: opacity 0.2s;
+          overflow: auto;
+          padding: 40px 20px;
         }
         #${this.imageOverlayId}.visible {
           opacity: 1;
@@ -1588,66 +2272,81 @@
         }
         #${this.imageDialogId} {
           position: relative;
-          max-width: 92vw;
-          max-height: 86vh;
-          background-color: var(--background);
-          border-radius: 10px;
-          padding: 12px;
-          box-shadow: var(--shadow-lg);
+          max-width: 1200px;
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          margin: auto;
         }
         #${this.imagePreviewId} {
-          max-width: 88vw;
-          max-height: 78vh;
+          max-width: 100%;
+          width: auto;
+          height: auto;
           display: block;
-          border-radius: 8px;
-          background-color: var(--muted);
+          border-radius: 4px;
+          cursor: zoom-in;
+        }
+        #${this.imagePreviewId}.zoomed {
+          cursor: zoom-out;
+          max-width: none;
         }
         #${this.imageCaptionId} {
-          margin-top: 8px;
+          margin-top: 12px;
           text-align: center;
-          font-size: 12px;
-          color: var(--muted-foreground);
+          font-size: 13px;
+          color: rgba(255, 255, 255, 0.8);
+          max-width: 90vw;
         }
         .daily-review-image-nav {
           position: absolute;
           top: 50%;
           transform: translateY(-50%);
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          border: none;
+          background: rgba(255, 255, 255, 0.15);
+          backdrop-filter: blur(10px);
+          color: #fff;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: background 0.2s;
+        }
+        .daily-review-image-nav:hover:not(:disabled) {
+          background: rgba(255, 255, 255, 0.25);
+        }
+        .daily-review-image-nav:disabled {
+          opacity: 0.3;
+          cursor: default;
+        }
+        #${this.imagePrevId} {
+          left: 20px;
+        }
+        #${this.imageNextId} {
+          right: 20px;
+        }
+        #${this.imageCloseId} {
+          position: absolute;
+          top: 20px;
+          right: 20px;
           width: 36px;
           height: 36px;
           border-radius: 50%;
           border: none;
-          background: rgba(0, 0, 0, 0.45);
+          background: rgba(255, 255, 255, 0.15);
+          backdrop-filter: blur(10px);
           color: #fff;
           cursor: pointer;
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: opacity 0.2s;
+          transition: background 0.2s;
         }
-        .daily-review-image-nav:disabled {
-          opacity: 0.35;
-          cursor: default;
-        }
-        #${this.imagePrevId} {
-          left: 10px;
-        }
-        #${this.imageNextId} {
-          right: 10px;
-        }
-        #${this.imageCloseId} {
-          position: absolute;
-          top: 10px;
-          right: 10px;
-          width: 30px;
-          height: 30px;
-          border-radius: 50%;
-          border: none;
-          background: rgba(0, 0, 0, 0.45);
-          color: #fff;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+        #${this.imageCloseId}:hover {
+          background: rgba(255, 255, 255, 0.25);
         }
 
         .daily-review-empty {
@@ -1730,7 +2429,7 @@
       button.title = i18n.t('daily_review');
       button.textContent = i18n.t('daily_review');
       button.style.display = 'none';
-      button.addEventListener('click', () => controller.openDialog());
+      button.addEventListener('click', () => controller.openDialog().catch(err => console.error('Failed to open dialog:', err)));
       document.body.appendChild(button);
     },
 
@@ -1820,6 +2519,15 @@
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
                     </svg>
                   </button>
+                  <button class="daily-review-icon-btn" id="${this.deleteId}" title="${i18n.t('delete_memo')}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+                      <path d="M10 11v6"></path>
+                      <path d="M14 11v6"></path>
+                      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                    </svg>
+                  </button>
                 </div>
                 <div class="daily-review-pager">
                   <button class="daily-review-icon-btn" id="${this.prevId}" title="${i18n.t('previous')}">
@@ -1875,8 +2583,9 @@
       // Bind events
       dialog.querySelector('.daily-review-close').addEventListener('click', () => controller.closeDialog());
       dialog.querySelector('#daily-review-close-btn').addEventListener('click', () => controller.closeDialog());
-      dialog.querySelector(`#${this.refreshId}`).addEventListener('click', () => controller.newBatch());
+      dialog.querySelector(`#${this.refreshId}`).addEventListener('click', () => controller.newBatch().catch(err => console.error('Failed to generate new batch:', err)));
       dialog.querySelector(`#${this.editId}`).addEventListener('click', () => controller.editCurrent());
+      dialog.querySelector(`#${this.deleteId}`).addEventListener('click', () => controller.deleteCurrent());
       dialog.querySelector(`#${this.prevId}`).addEventListener('click', () => controller.prev());
       dialog.querySelector(`#${this.nextId}`).addEventListener('click', () => controller.next());
 
@@ -1890,13 +2599,13 @@
         const settings = settingsService.load();
         settings.timeRange = e.target.value;
         settingsService.save(settings);
-        controller.onSettingsChanged();
+        controller.onSettingsChanged().catch(err => console.error('Settings change failed:', err));
       });
       dialog.querySelector('#daily-review-count').addEventListener('change', (e) => {
         const settings = settingsService.load();
         settings.count = parseInt(e.target.value, 10);
         settingsService.save(settings);
-        controller.onSettingsChanged();
+        controller.onSettingsChanged().catch(err => console.error('Settings change failed:', err));
       });
 
       // Language selector
@@ -1911,7 +2620,7 @@
           if (overlay) overlay.remove();
           if (oldDialog) oldDialog.remove();
           ui.createDialog();
-          controller.openDialog();
+          controller.openDialog().catch(err => console.error('Failed to reopen dialog:', err));
         });
       }
 
@@ -2014,7 +2723,7 @@
       const dialog = document.createElement('div');
       dialog.id = this.imageDialogId;
       dialog.innerHTML = `
-        <img id="${this.imagePreviewId}" alt="">
+        <img id="${this.imagePreviewId}" alt="" title="${i18n.t('click_to_zoom')}">
         <div id="${this.imageCaptionId}"></div>
         <button class="daily-review-image-nav" id="${this.imagePrevId}" title="${i18n.t('previous')}">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2037,6 +2746,13 @@
       dialog.addEventListener('click', (event) => event.stopPropagation());
       overlay.appendChild(dialog);
       document.body.appendChild(overlay);
+
+      // Add zoom functionality
+      const img = document.getElementById(this.imagePreviewId);
+      img.addEventListener('click', (event) => {
+        event.stopPropagation();
+        img.classList.toggle('zoomed');
+      });
 
       document.getElementById(this.imagePrevId).addEventListener('click', (event) => {
         event.stopPropagation();
@@ -2139,7 +2855,9 @@
       const createTime = utils.toTimeMs(memo.createTime, Date.now());
       const rawContent = memo.content || '';
       const memoKey = memo.id || utils.getMemoId(memo) || `memo-${Math.random().toString(36).slice(2)}`;
-      const tags = Array.isArray(memo.tags) ? memo.tags : utils.extractTags(rawContent);
+      const tags = Array.isArray(memo.tags) && memo.tags.length > 0
+        ? memo.tags
+        : utils.extractTags(rawContent); // Fallback only if tags missing
       const contentWithoutTags = utils.removeTagsFromContent(rawContent);
       const htmlContent = utils.markdownToHtml(contentWithoutTags);
 
@@ -2201,6 +2919,12 @@
         edit.title = editable ? i18n.t('edit_memo') : i18n.t('edit_not_supported');
       }
 
+      const del = document.getElementById(this.deleteId);
+      if (del) {
+        del.disabled = !memo.name;
+        del.title = i18n.t('delete_memo');
+      }
+
       this.bindImagePreview();
     },
 
@@ -2243,8 +2967,12 @@
 
     closeImagePreview() {
       const overlay = document.getElementById(this.imageOverlayId);
+      const img = document.getElementById(this.imagePreviewId);
       if (overlay) {
         overlay.classList.remove('visible');
+      }
+      if (img) {
+        img.classList.remove('zoomed');
       }
       this.activeImageKey = null;
       this.activeImageIndex = 0;
@@ -2257,6 +2985,13 @@
       const nextIndex = this.activeImageIndex + step;
       if (nextIndex < 0 || nextIndex >= images.length) return;
       this.activeImageIndex = nextIndex;
+
+      // Reset zoom when navigating
+      const img = document.getElementById(this.imagePreviewId);
+      if (img) {
+        img.classList.remove('zoomed');
+      }
+
       this.updateImagePreview();
     },
 
@@ -2298,22 +3033,28 @@
     currentDeckKey: '',
     isSavingEdit: false,
     keydownHandler: null,
+    loadingTimer: null,
 
     init() {
-      if (window.__dailyReviewInitialized) return;
-      window.__dailyReviewInitialized = true;
+      try {
+        if (window.__dailyReviewInitialized) return;
+        window.__dailyReviewInitialized = true;
 
-      ui.injectStyles();
-      ui.createFloatingButton();
-      ui.createDialog();
-      ui.createImagePreview();
-      ui.createEditDialog();
+        ui.injectStyles();
+        ui.createFloatingButton();
+        ui.createDialog();
+        ui.createImagePreview();
+        ui.createEditDialog();
 
-      this.updateEntryVisibility();
-      this.patchRouteEvents();
-      window.addEventListener('popstate', () => this.updateEntryVisibility());
-      window.addEventListener('daily-review-routechange', () => this.updateEntryVisibility());
-      this.bindKeyboardShortcuts();
+        this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error));
+        this.patchRouteEvents();
+        window.addEventListener('popstate', () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
+        window.addEventListener('daily-review-routechange', () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
+        window.addEventListener('focus', () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
+        this.bindKeyboardShortcuts();
+      } catch (error) {
+        console.error('Failed to initialize Daily Review plugin:', error);
+      }
     },
 
     bindKeyboardShortcuts() {
@@ -2385,6 +3126,13 @@
     async openDialog() {
       if (ui.isAuthRoute()) return;
       if (this.isOpen) return;
+
+      const isAuthenticated = await authService.isAuthenticated();
+      if (!isAuthenticated) {
+        alert(i18n.t('auth_required'));
+        return;
+      }
+
       this.isOpen = true;
       // Load batch state from localStorage (persists across dialog open/close)
       this.deckBatch = batchService.load();
@@ -2392,7 +3140,12 @@
       this.deckMemos = [];
       this.viewedInSession = new Set();
       ui.showDialog();
-      this.loadDeck();
+      try {
+        await this.loadDeck();
+      } catch (error) {
+        console.error('Failed to open dialog:', error);
+        ui.setReviewState('error', i18n.t('load_failed'));
+      }
     },
 
     closeDialog() {
@@ -2422,7 +3175,7 @@
       };
     },
 
-    updateEntryVisibility() {
+    async updateEntryVisibility() {
       if (ui.isAuthRoute()) {
         ui.hideFloatingButton();
       } else {
@@ -2430,24 +3183,81 @@
       }
     },
 
-    onSettingsChanged() {
+    async onSettingsChanged() {
       // Reset batch to 0 when settings change
       this.deckBatch = 0;
       batchService.save(this.deckBatch);
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
-      this.loadDeck(true);
+      try {
+        await this.loadDeck(true);
+      } catch (error) {
+        console.error('Failed to reload deck after settings change:', error);
+        ui.setReviewState('error', i18n.t('load_failed'));
+      }
     },
 
-    newBatch() {
+    async newBatch() {
       this.deckBatch += 1;
       // Save batch state to localStorage
       batchService.save(this.deckBatch);
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
-      this.loadDeck(true);
+      try {
+        await this.loadDeck(true);
+      } catch (error) {
+        console.error('Failed to generate new batch:', error);
+        ui.setReviewState('error', i18n.t('load_failed'));
+      }
+    },
+
+    async deleteCurrent() {
+      if (!this.deckMemos.length) return;
+      const memo = this.deckMemos[this.deckIndex];
+      if (!memo || !memo.name) return;
+
+      if (!confirm(i18n.t('delete_confirm'))) return;
+
+      const delBtn = document.getElementById(ui.deleteId);
+      if (delBtn) delBtn.disabled = true;
+
+      try {
+        await apiService.deleteMemo(memo.name);
+
+        // Remove from deck
+        this.deckMemos.splice(this.deckIndex, 1);
+
+        // Remove from pool cache (best-effort)
+        const settings = settingsService.load();
+        const pool = poolService.load(settings.timeRange);
+        if (pool && Array.isArray(pool)) {
+          const idx = pool.findIndex((m) => m && m.id === memo.id);
+          if (idx >= 0) {
+            pool.splice(idx, 1);
+            poolService.save(settings.timeRange, pool);
+          }
+        }
+
+        // Clear deck cache to ensure deleted memo doesn't appear in future decks
+        deckService.clear();
+
+        if (this.deckMemos.length === 0) {
+          ui.renderDeck([], 0);
+          return;
+        }
+
+        // Stay at same index, or step back if we were at the end
+        if (this.deckIndex >= this.deckMemos.length) {
+          this.deckIndex = this.deckMemos.length - 1;
+        }
+        ui.renderDeck(this.deckMemos, this.deckIndex);
+      } catch (e) {
+        console.error('Failed to delete memo:', e);
+        alert(i18n.t('delete_failed'));
+        if (delBtn) delBtn.disabled = false;
+      }
     },
 
     editCurrent() {
@@ -2558,35 +3368,78 @@
       historyService.markViewed(memoId, utils.getDailySeed());
     },
 
-    async getPoolMemos(timeRange) {
+    estimateDesiredPoolSize(timeRange, dailyCount) {
+      const count = Number.isFinite(dailyCount) ? Math.max(1, Math.floor(dailyCount)) : CONFIG.DEFAULT_COUNT;
+      const minTarget = timeRange === 'all' ? CONFIG.POOL_MIN_TARGET_ALL : CONFIG.POOL_MIN_TARGET_SCOPED;
+      return Math.max(count * CONFIG.POOL_TARGET_MULTIPLIER, minTarget);
+    },
+
+    async getPoolMemos(timeRange, desiredPoolSize) {
+      const desiredSize = Number.isFinite(desiredPoolSize) && desiredPoolSize > 0
+        ? Math.floor(desiredPoolSize)
+        : this.estimateDesiredPoolSize(timeRange, CONFIG.DEFAULT_COUNT);
+      const maxPages = timeRange === 'all' ? CONFIG.POOL_MAX_PAGES_ALL : CONFIG.POOL_MAX_PAGES_SCOPED;
       const cached = poolService.load(timeRange);
       if (cached && cached.length > 0) return cached;
 
       const normalized = [];
       const seen = new Set();
+      const timeRangeConfig = CONFIG.TIME_RANGES.find((t) => t.value === timeRange);
+      const startTimeMs = timeRangeConfig && timeRangeConfig.days !== null
+        ? Date.now() - (timeRangeConfig.days * 24 * 60 * 60 * 1000)
+        : null;
+      const includeMemo = (memo) => {
+        if (!memo || !memo.id) return false;
+        if (startTimeMs === null) return true;
+        const createMs = utils.toTimeMs(memo.createTime, 0);
+        return createMs >= startTimeMs;
+      };
+      const startedAt = Date.now();
 
       const first = await apiService.fetchMemos(timeRange);
       for (const memo of first.memos || []) {
         const m = utils.normalizeMemo(memo);
-        if (!m.id) continue;
+        if (!includeMemo(m)) continue;
         if (seen.has(m.id)) continue;
         seen.add(m.id);
         normalized.push(m);
       }
 
-      if (timeRange === 'all' && first.nextPageToken && CONFIG.POOL_MAX_PAGES_ALL > 1) {
+      let nextPageToken = first.nextPageToken;
+      let currentPage = 1;
+      let lowYieldStreak = 0;
+      const canEarlyStop = () => normalized.length >= Math.max(1, Math.floor(desiredSize * CONFIG.POOL_EARLY_STOP_MIN_RATIO));
+      while (nextPageToken && currentPage < maxPages && normalized.length < desiredSize) {
         try {
-          const second = await apiService.fetchMemos(timeRange, first.nextPageToken);
-          for (const memo of second.memos || []) {
+          const beforeCount = normalized.length;
+          const next = await apiService.fetchMemos(timeRange, nextPageToken);
+          for (const memo of next.memos || []) {
             const m = utils.normalizeMemo(memo);
-            if (!m.id) continue;
+            if (!includeMemo(m)) continue;
             if (seen.has(m.id)) continue;
             seen.add(m.id);
             normalized.push(m);
           }
+          const addedThisPage = normalized.length - beforeCount;
+          if (addedThisPage < CONFIG.POOL_MIN_NEW_PER_PAGE) {
+            lowYieldStreak += 1;
+          } else {
+            lowYieldStreak = 0;
+          }
+          nextPageToken = next.nextPageToken;
+          currentPage += 1;
+
+          const elapsedMs = Date.now() - startedAt;
+          if (canEarlyStop() && elapsedMs >= CONFIG.POOL_FETCH_TIME_BUDGET_MS) {
+            break;
+          }
+          if (canEarlyStop() && lowYieldStreak >= CONFIG.POOL_LOW_YIELD_MAX_STREAK) {
+            break;
+          }
         } catch (e) {
-          // Best-effort second page; ignore failures to keep load low and UX resilient.
-          console.warn('Failed to fetch extra memo page for pool:', e);
+          // Best-effort additional pages; ignore failures to keep load low and UX resilient.
+          console.warn('Failed to fetch additional memo page for pool:', e);
+          break;
         }
       }
 
@@ -2595,16 +3448,22 @@
     },
 
     buildBuckets(pool) {
-      const sorted = [...pool].sort((a, b) => {
-        const ta = utils.toTimeMs(a.createTime, 0);
-        const tb = utils.toTimeMs(b.createTime, 0);
-        return ta - tb;
-      });
-      if (sorted.length === 0) return [[], [], []];
-      const third = Math.ceil(sorted.length / 3);
-      const oldest = sorted.slice(0, third);
-      const middle = sorted.slice(third, third * 2);
-      const newest = sorted.slice(third * 2);
+      const nowMs = Date.now();
+      const dayMs = 24 * 60 * 60 * 1000;
+      const oldest = [];
+      const middle = [];
+      const newest = [];
+      for (const memo of pool || []) {
+        const createMs = utils.toTimeMs(memo?.createTime, 0);
+        const ageDays = Math.floor((nowMs - createMs) / dayMs);
+        if (ageDays > CONFIG.BUCKET_MIDDLE_DAYS) {
+          oldest.push(memo);
+        } else if (ageDays > CONFIG.BUCKET_NEWEST_DAYS) {
+          middle.push(memo);
+        } else {
+          newest.push(memo);
+        }
+      }
       return [oldest, middle, newest];
     },
 
@@ -2641,6 +3500,44 @@
       return scored;
     },
 
+    getMemoTimeBucketKey(memo) {
+      const ts = utils.toTimeMs(memo?.createTime, 0);
+      if (!ts) return 'unknown';
+      const d = new Date(ts);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    },
+
+    getDiversityPenalty(memo, picked) {
+      if (!CONFIG.DIVERSITY_PENALTY_ENABLED) return 0;
+      if (!memo || !Array.isArray(picked) || picked.length === 0) return 0;
+
+      const currentTags = new Set(Array.isArray(memo.tags) ? memo.tags.filter(Boolean) : []);
+      const currentBucket = this.getMemoTimeBucketKey(memo);
+      const lookback = picked.slice(-CONFIG.DIVERSITY_LOOKBACK);
+      let penalty = 0;
+
+      for (let i = lookback.length - 1, rank = 1; i >= 0; i--, rank++) {
+        const prior = lookback[i];
+        if (!prior) continue;
+
+        if (currentTags.size > 0) {
+          const priorTags = Array.isArray(prior.tags) ? prior.tags : [];
+          for (const tag of priorTags) {
+            if (currentTags.has(tag)) {
+              penalty += CONFIG.DIVERSITY_TAG_WEIGHT * rank;
+              break;
+            }
+          }
+        }
+
+        if (currentBucket !== 'unknown' && this.getMemoTimeBucketKey(prior) === currentBucket) {
+          penalty += CONFIG.DIVERSITY_TIME_BUCKET_WEIGHT * rank;
+        }
+      }
+
+      return penalty;
+    },
+
     pickFromBucket(bucket, target, history, today, seedPrefix) {
       if (target <= 0) return [];
       const relax = [CONFIG.NO_REPEAT_DAYS, 2, 1, 0];
@@ -2649,11 +3546,28 @@
       const pickedIds = new Set();
       for (const minDays of relax) {
         if (picked.length >= target) break;
-        for (const item of scored) {
-          if (picked.length >= target) break;
-          if (item.daysSince < minDays) continue;
-          const memo = item.memo;
-          if (pickedIds.has(memo.id)) continue;
+        while (picked.length < target) {
+          const available = scored.filter((item) => item.daysSince >= minDays && item.memo?.id && !pickedIds.has(item.memo.id));
+          if (available.length === 0) break;
+
+          let chosen = available[0];
+          if (CONFIG.DIVERSITY_PENALTY_ENABLED) {
+            const windowSize = Math.min(CONFIG.DIVERSITY_CANDIDATE_WINDOW, available.length);
+            let best = null;
+            for (let i = 0; i < windowSize; i++) {
+              const candidate = available[i];
+              const penalty = this.getDiversityPenalty(candidate.memo, picked);
+              if (!best || penalty < best.penalty || (penalty === best.penalty && i < best.index)) {
+                best = { penalty, index: i, item: candidate };
+              }
+            }
+            if (best && best.item) {
+              chosen = best.item;
+            }
+          }
+
+          const memo = chosen.memo;
+          if (!memo?.id) break;
           pickedIds.add(memo.id);
           picked.push(memo);
         }
@@ -2693,12 +3607,18 @@
         // Optimized: Find min/max in O(n) instead of sorting in O(n log n)
         let oldest = memos[0];
         let newest = memos[0];
+        let oldestTime = utils.toTimeMs(oldest.createTime, 0);
+        let newestTime = utils.toTimeMs(newest.createTime, 0);
         for (const memo of memos) {
           const t = utils.toTimeMs(memo.createTime, 0);
-          const oldestTime = utils.toTimeMs(oldest.createTime, 0);
-          const newestTime = utils.toTimeMs(newest.createTime, 0);
-          if (t < oldestTime) oldest = memo;
-          if (t > newestTime) newest = memo;
+          if (t < oldestTime) {
+            oldest = memo;
+            oldestTime = t;
+          }
+          if (t > newestTime) {
+            newest = memo;
+            newestTime = t;
+          }
         }
         if (!oldest || !newest || oldest.id === newest.id) continue;
         const tie = utils.stringToSeed(`${seedPrefix}-tag-${tag}`);
@@ -2747,6 +3667,19 @@
         });
       }
 
+      if (deck.length < settings.count) {
+        const seen = new Set(deck.filter((m) => m?.id).map((m) => m.id));
+        const fallback = this.scoreByReviewPriority(eligible, history, today, `${seedPrefix}-fill`);
+        for (const item of fallback) {
+          if (deck.length >= settings.count) break;
+          const memo = item.memo;
+          if (!memo?.id) continue;
+          if (seen.has(memo.id)) continue;
+          seen.add(memo.id);
+          deck.push(memo);
+        }
+      }
+
       return deck.slice(0, settings.count);
     },
 
@@ -2755,6 +3688,12 @@
       const today = utils.getDailySeed();
       const key = deckService.makeKey(today, settings.timeRange, settings.count, this.deckBatch);
       this.currentDeckKey = key;
+
+      // Clear any pending loading timer
+      if (this.loadingTimer) {
+        clearTimeout(this.loadingTimer);
+        this.loadingTimer = null;
+      }
 
       if (!forceRegenerate) {
         const cached = deckService.getDeck(key);
@@ -2767,11 +3706,22 @@
         }
       }
 
-      ui.setReviewState('loading');
+      // Delay showing loading state by 200ms to avoid flicker on fast loads
+      this.loadingTimer = setTimeout(() => {
+        ui.setReviewState('loading');
+        this.loadingTimer = null;
+      }, 200);
 
       try {
-        const pool = await this.getPoolMemos(settings.timeRange);
+        const desiredPoolSize = this.estimateDesiredPoolSize(settings.timeRange, settings.count);
+        const pool = await this.getPoolMemos(settings.timeRange, desiredPoolSize);
         const deckMemos = this.buildDeckFromPool(pool, settings, today, this.deckBatch);
+
+        // Clear loading timer if still pending
+        if (this.loadingTimer) {
+          clearTimeout(this.loadingTimer);
+          this.loadingTimer = null;
+        }
 
         if (deckMemos.length === 0) {
           ui.setReviewState('empty');
@@ -2795,8 +3745,32 @@
         ui.renderDeck(this.deckMemos, this.deckIndex);
         this.markViewedCurrent();
       } catch (error) {
+        // Clear loading timer on error
+        if (this.loadingTimer) {
+          clearTimeout(this.loadingTimer);
+          this.loadingTimer = null;
+        }
+
         console.error('Failed to load daily review deck:', error);
-        ui.setReviewState('error', i18n.t('load_failed'));
+
+        // Determine specific error message based on error type
+        let errorMessage = i18n.t('load_failed');
+
+        if (error.message && error.message.includes('OFFLINE')) {
+          errorMessage = i18n.t('offline_error');
+        } else if (error.message && /API error: 401/.test(error.message)) {
+          errorMessage = i18n.t('auth_required');
+        } else if (error.message && /API error: 5[0-9]{2}/.test(error.message)) {
+          errorMessage = i18n.t('error_server');
+        } else if (error.message && /API error: 403/.test(error.message)) {
+          errorMessage = i18n.t('error_permission');
+        } else if (error.message && /API error: 404/.test(error.message)) {
+          errorMessage = i18n.t('error_not_found');
+        } else if (error.message && (error.message.includes('network') || error.message.includes('fetch'))) {
+          errorMessage = i18n.t('error_network');
+        }
+
+        ui.setReviewState('error', errorMessage);
       }
     }
   };
@@ -2804,15 +3778,43 @@
   // ============================================
   // Entry Point
   // ============================================
+  if (typeof globalThis !== 'undefined' && globalThis.__DAILY_REVIEW_TEST_MODE) {
+    globalThis.__DAILY_REVIEW_TEST_HOOKS = {
+      CONFIG,
+      utils,
+      historyService,
+      poolService,
+      apiService,
+      controller,
+      capabilityService
+    };
+    return;
+  }
+
   // Initialize i18n
   i18n.init();
+
+  // Initialize network utils
+  networkUtils.init();
 
   // Wait for DOM to be ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-      setTimeout(() => controller.init(), 500);
+      setTimeout(() => {
+        try {
+          controller.init();
+        } catch (error) {
+          console.error('Failed to initialize Daily Review plugin:', error);
+        }
+      }, 500);
     });
   } else {
-    setTimeout(() => controller.init(), 500);
+    setTimeout(() => {
+      try {
+        controller.init();
+      } catch (error) {
+        console.error('Failed to initialize Daily Review plugin:', error);
+      }
+    }, 500);
   }
 })();

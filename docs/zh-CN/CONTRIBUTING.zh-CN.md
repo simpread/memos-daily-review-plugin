@@ -38,18 +38,21 @@
 ### 每日固定随机
 
 ```javascript
-// 1) 获取候选池（pool），本地 TTL 缓存（默认 6 小时）
-// 2) 生成"每日牌堆"（deck）：key = day + timeRange + count + batch
-// 3) deck 内部使用稳定打散（memoId + seed）避免依赖 API 返回顺序
+// 1) 按每日卡片数自适应计算候选池目标大小
+// 2) 在候选量足够时，按时间预算与低增量页策略提前停止翻页
+// 3) 生成"每日牌堆"（deck）：key = day + timeRange + count + batch
+// 4) deck 内部使用稳定打散（memoId + seed）避免依赖 API 返回顺序
 ```
 
 ### 复习式抽取
 
 ```javascript
-// 1) 将候选池按创建时间分为 3 桶（oldest/middle/newest），均衡抽取
+// 1) 将候选池按时间边界分为 3 桶（newest/middle/oldest）
 // 2) 结合本地 history 做 3 天去重（不足时逐步放宽）
 // 3) 优先级：从未出现 > 久未出现 > 出现次数少（同分用稳定 hash 打散）
-// 4) 尝试插入 1 组"同标签碰撞位"（同标签最早 + 最晚）
+// 4) 在候选窗口内加入多样性惩罚（避免同标签/同时间簇过密）
+// 5) 尝试插入 1 组"同标签碰撞位"（同标签最早 + 最晚）
+// 6) 若不足 count，则从全量优先级列表补齐
 ```
 
 ### Markdown 渲染（嵌套列表）
@@ -124,7 +127,7 @@ ensureListForLevel('ul', depth);
 
 ### 缓存策略
 
-- **候选池**：TTL 6 小时，减少重复请求
+- **候选池**：TTL 6 小时，自适应目标大小 + 提前停止策略
 - **牌堆**：按 key 缓存，最多保留 10 个历史 deck
 - **复习历史**：最多 5000 条，超出按"最久未回顾"淘汰
 
@@ -134,7 +137,22 @@ ensureListForLevel('ul', depth);
 |------|------|------|
 | `GET /api/v1/memos` | 获取 Memo 列表 | 公开（受可见性过滤） |
 | `PATCH /api/v1/memos/{name}` | 更新 Memo 内容 | 需要登录 + 权限 |
-| `POST /memos.api.v1.AuthService/RefreshToken` | 刷新 access token | 需要 refresh cookie |
+| `POST /api/v1/auth/refresh` | 刷新 access token（新路径） | 需要 refresh cookie |
+| `POST /memos.api.v1.AuthService/RefreshToken` | 刷新 access token（兼容回退） | 需要 refresh cookie |
+| `GET /api/v1/auth/sessions/current` | 会话检查（v0.25.x 基线路径） | 需要登录 |
+| `GET /api/v1/auth/me` | 会话检查（新路径） | 需要登录 |
+
+## 兼容性策略
+
+- 基线兼容目标：**Memos v0.25.3**
+- 前向兼容目标：**Memos v0.26.x+**
+- 运行时能力探测：
+  - 自动探测并缓存 auth/session 端点偏好
+  - refresh 端点探测 + 冷却重试机制
+  - `updateMask` / `update_mask` 自动回退
+  - `filter` / `orderBy` 不支持时自动降级
+  - 分页字段同时兼容 `nextPageToken` 和 `next_page_token`
+- 本地能力缓存键：`memos-daily-review-capabilities`
 
 ## CSS 变量
 
@@ -166,6 +184,13 @@ ensureListForLevel('ul', depth);
 node --check memos-daily-review-plugin.js
 ```
 
+### 算法回归测试
+
+```bash
+# 在受限环境下请使用 --test-isolation=none
+node --test --test-isolation=none tests/algorithm.test.js
+```
+
 ### 调试
 
 1. 在浏览器控制台查看日志（插件会 `console.error` 错误信息）
@@ -191,12 +216,16 @@ node --check memos-daily-review-plugin.js
 - [ ] 多图可左右切换
 - [ ] 编辑保存功能正常
 - [ ] 未登录时行为符合预期
+- [ ] v0.25.3 兼容路径正常（`next_page_token`、session 路径）
+- [ ] v0.26.x 兼容路径正常（`/api/v1/auth/me`、refresh 新路径）
 
 ### 性能测试
 - [ ] 使用 Performance 面板测试大数据集（1000+ memos）
 - [ ] 测试 `generateDeck` 执行时间（应 < 100ms）
 - [ ] 测试 Markdown 渲染时间（长文档应 < 50ms）
 - [ ] 检查内存占用（切换 100 次卡片后无明显增长）
+- [ ] 验证自适应拉池在大数据集下可在预算时间内停止
+- [ ] 验证多样性惩罚可降低同标签连续命中
 
 ## 已知限制
 

@@ -29,98 +29,102 @@ The plugin is an IIFE (Immediately Invoked Function Expression) with the followi
 (function DailyReviewPlugin() {
   'use strict';
 
-  // Lines 25-48: Configuration
+  // Configuration
   const CONFIG = { /* storage keys, defaults, options */ };
 
-  // Lines 50-57: Precompiled Regex Patterns
+  // Precompiled Regex Patterns
   const REGEX_PATTERNS = { /* heading, list, inline formatting */ };
 
-  // Lines 59-403: Utility Functions
+  // Utility Functions
   const utils = {
     getDailySeed,           // Date-based seed generation
     mulberry32,             // PRNG implementation
-    shuffle,                // Fisher-Yates with seed
+    seededShuffle,          // Fisher-Yates with seed
     markdownToHtml,         // Markdown renderer with nested lists
     formatInlineMarkdown,   // Bold, italic, links, images
+    normalizeMemo,          // Normalize API memo shape
     extractTags,            // Tag extraction from content
     // ... more utilities
   };
 
-  // Lines 405-423: Settings Service
+  // Settings Service
   const settingsService = {
     load,                   // Load user preferences
     save,                   // Save user preferences
   };
 
-  // Lines 428-492: History Service
+  // Batch/History Services
+  const batchService = { load, save };
   const historyService = {
     load,                   // Load review history
     save,                   // Save review history
-    recordShown,            // Record memo view
+    markViewed,             // Record memo view
     getDaysSinceShown,      // Calculate days since last view
-    pruneOldEntries,        // LRU pruning (max 5000 items)
+    prune,                  // LRU pruning (max 5000 items)
   };
 
-  // Lines 497-525: Pool Cache Service
+  // Pool/Deck Cache Services
   const poolService = {
-    get,                    // Get cached pool
-    set,                    // Set pool with TTL (6 hours)
-    clear,                  // Clear cache
+    load,                   // Get cached pool
+    save,                   // Set pool with TTL (6 hours)
   };
-
-  // Lines 530-605: Deck Cache Service
   const deckService = {
-    get,                    // Get cached deck by key
-    set,                    // Set deck (keeps last 10)
+    getDeck,                // Get cached deck by key
+    saveDeck,               // Set deck (keeps last 10)
     clear,                  // Clear all decks
-    generateKey,            // Generate cache key: day-timeRange-count-batch
+    makeKey,                // Generate cache key: day-timeRange-count-batch
+  };
+  const capabilityService = {
+    getState, saveState,    // Runtime capability cache
+    // endpoint/param fallback preference helpers
   };
 
-  // Lines 610-691: API Service
+  // API Service
   const apiService = {
-    fetchMemos,             // GET /api/v1/memos with filters
-    updateMemo,             // PATCH /api/v1/memos/{name}
+    fetchMemos,             // GET /api/v1/memos with adaptive fallback
+    updateMemoContent,      // PATCH /api/v1/memos/{name}
+    deleteMemo,             // DELETE /api/v1/memos/{name}
   };
 
-  // Lines 696-815: Auth Service
+  // Auth Service
   const authService = {
     getAccessToken,         // Get token from session/localStorage
-    refreshAccessToken,     // POST /memos.api.v1.AuthService/RefreshToken
+    ensureAccessToken,      // Refresh token if endpoint is supported
     getAuthHeaders,         // Build Authorization header
+    getCurrentUser,         // Resolve active session/user
   };
 
-  // Lines 820-2006: UI Components
+  // UI Components
   const ui = {
     injectStyles,           // Inject CSS (uses Memos CSS variables)
     createFloatingButton,   // Create bottom-right button
     createDialog,           // Create modal dialog
-    renderCard,             // Render memo card with Markdown
-    createImageOverlay,     // Create image preview overlay
+    renderDeck,             // Render memo card by deck index
+    createImagePreview,     // Create image preview overlay
     createEditDialog,       // Create edit modal
     bindImagePreview,       // Event delegation for images
     // ... more UI methods
   };
 
-  // Lines 2011-2443: Controller
+  // Controller
   const controller = {
     init,                   // Entry point
     openDialog,             // Open review dialog
-    generateDeck,           // Main deck generation logic
-    buildBuckets,           // Split pool into 3 time buckets
+    loadDeck,               // Main deck loading logic
+    estimateDesiredPoolSize,// Adaptive pool target sizing
+    getPoolMemos,           // Paged fetch with time budget/early stop
+    buildBuckets,           // Split pool into newest/middle/oldest time windows
     pickFromBucket,         // Pick memos from bucket with priority
-    sortByReviewPriority,   // Sort by review priority
+    scoreByReviewPriority,  // Sort by review priority
+    getDiversityPenalty,    // Diversity penalty for dense clusters
     findSparkPair,          // Find spark pair (O(n) algorithm)
-    insertSparkPair,        // Insert spark pair into deck
-    showCard,               // Display current card
-    prevCard,               // Navigate to previous card
-    nextCard,               // Navigate to next card
-    shuffle,                // Generate new deck (increment batch)
-    editMemo,               // Edit current memo
-    saveMemo,               // Save edited memo
+    buildDeckFromPool,      // Generate final deck
+    prev, next, newBatch,   // Navigation and reshuffle
+    editCurrent, saveEditor,// Edit current memo
+    deleteCurrent,          // Delete current memo
   };
 
-  // Lines 2448-2456: Entry Point
-  // Initialization logic
+  // Entry Point + optional test hooks
 })();
 ```
 
@@ -130,39 +134,43 @@ The plugin is an IIFE (Immediately Invoked Function Expression) with the followi
 
 ### 1. Deterministic Deck Generation
 
-**Location**: `controller.generateDeck()` (lines 2115-2230)
+**Location**: `controller.loadDeck()` + `controller.buildDeckFromPool()`
 
 **Process**:
-1. Fetch pool from cache or API
-2. Build 3 buckets by creation time (oldest/middle/newest)
-3. Allocate target count across buckets (e.g., 8 cards → 3/3/2)
-4. Pick from each bucket using review priority
-5. Interleave buckets for variety
-6. Insert spark pair if available
+1. Compute target pool size from `dailyCount`
+2. Fetch pool from cache/API with early-stop budget controls
+3. Build 3 buckets by time windows (newest/middle/oldest)
+4. Allocate target count across buckets (e.g., 8 cards → 3/3/2)
+5. Pick from each bucket using review priority + diversity penalty
+6. Interleave buckets for variety
+7. Insert spark pair if available
+8. Top up from global priority list if still below count
 
 **Key**: Uses `seedPrefix = day + timeRange + count + batch` for deterministic randomness.
 
 ```javascript
 // Simplified logic
-const pool = await poolService.get() || await apiService.fetchMemos();
+const desiredPoolSize = estimateDesiredPoolSize(settings.timeRange, settings.count);
+const pool = await getPoolMemos(settings.timeRange, desiredPoolSize);
 const buckets = buildBuckets(pool);  // [oldest, middle, newest]
 const targets = [Math.ceil(count/3), Math.ceil(count/3), count - 2*Math.ceil(count/3)];
 const selected = buckets.map((bucket, i) => pickFromBucket(bucket, targets[i], history, today, seedPrefix));
 const interleaved = interleave(selected);
-const sparkPair = findSparkPair(pool, interleaved, seedPrefix);
+const sparkPair = findSparkPair(pool, history, today, seedPrefix);
 if (sparkPair) insertSparkPair(interleaved, sparkPair);
-return interleaved;
+return topUpIfNeeded(interleaved, pool, count);
 ```
 
 ### 2. Review Priority Algorithm
 
-**Location**: `controller.sortByReviewPriority()` (lines 2270-2294)
+**Location**: `controller.scoreByReviewPriority()` + `controller.pickFromBucket()`
 
 **Scoring Criteria** (in order):
 1. Never shown (highest priority)
 2. Days since last shown (longer = higher)
 3. Shown count (lower = higher)
 4. Tie-breaker (deterministic hash of memo ID)
+5. Diversity penalty in candidate window (same tag/time cluster gets extra cost)
 
 **Relaxation Strategy**:
 - Try `minDaysSince = 3` first
@@ -171,33 +179,22 @@ return interleaved;
 
 ```javascript
 // Simplified logic
-for (let minDaysSince = 3; minDaysSince >= 0; minDaysSince--) {
-  const scored = candidates
-    .map(m => {
-      const entry = history.items[m.id];
-      const daysSince = getDaysSinceShown(history, m.id, today);
-      const never = !entry || !entry.lastShownDay;
-      const shownCount = entry?.shownCount || 0;
-      const tie = stringToSeed(`${seedPrefix}-${m.id}`);
-      return { m, never, daysSince, shownCount, tie, valid: daysSince >= minDaysSince };
-    })
-    .filter(item => item.valid);
-
-  if (scored.length >= needed) {
-    scored.sort((a, b) => {
-      if (a.never !== b.never) return b.never - a.never;
-      if (a.daysSince !== b.daysSince) return b.daysSince - a.daysSince;
-      if (a.shownCount !== b.shownCount) return a.shownCount - b.shownCount;
-      return a.tie - b.tie;
-    });
-    return scored.slice(0, needed).map(item => item.m);
+const scored = scoreByReviewPriority(bucket, history, today, seedPrefix);
+const picked = [];
+for (const minDays of [3, 2, 1, 0]) {
+  while (picked.length < target) {
+    const candidates = scored.filter(item => item.daysSince >= minDays && !pickedIds.has(item.memo.id));
+    if (candidates.length === 0) break;
+    const selected = chooseWithDiversityPenalty(candidates, picked); // candidate-window search
+    picked.push(selected.memo);
   }
 }
+return picked.slice(0, target);
 ```
 
 ### 3. Spark Pair Algorithm
 
-**Location**: `controller.findSparkPair()` (lines 2326-2358)
+**Location**: `controller.findSparkPair()`
 
 **Purpose**: Find memo pairs with same tag but maximum time gap.
 
@@ -238,7 +235,7 @@ return candidates[0] || null;
 
 ### 4. Markdown Rendering with Nested Lists
 
-**Location**: `utils.markdownToHtml()` (lines 258-403)
+**Location**: `utils.markdownToHtml()`
 
 **Key Features**:
 - Detects indentation level (Tab = 2 spaces)
@@ -282,11 +279,14 @@ container.appendChild(fragment);
 | `memos-daily-review-pool` | Pool cache | `{memos: Memo[], timestamp: number}` |
 | `memos-daily-review-cache` | Deck cache | `{[key: string]: {deck: Memo[], timestamp: number}}` |
 | `memos-daily-review-history` | Review history | `{items: {[memoId: string]: {lastShownDay: string, shownCount: number}}}` |
+| `memos-daily-review-capabilities` | Runtime capability cache | `{preferred endpoints, fallback flags, timestamp}` |
+| `memos-daily-review-batch` | Daily shuffle batch | `{day: string, batch: number}` |
 
 **Caching Strategy**:
-- **Pool**: TTL 6 hours, reduces API requests
+- **Pool**: TTL 6 hours, adaptive target size + early-stop policy
 - **Deck**: Cached by key `day-timeRange-count-batch`, keeps last 10
 - **History**: Max 5000 entries, LRU eviction by "longest unseen"
+- **Capabilities**: TTL + refresh cooldown to avoid repeated unsupported endpoint probing
 
 ---
 
@@ -296,11 +296,23 @@ container.appendChild(fragment);
 |----------|--------|---------|------|
 | `/api/v1/memos` | GET | Fetch memo list | Optional (filters by visibility) |
 | `/api/v1/memos/{name}` | PATCH | Update memo content | Required |
-| `/memos.api.v1.AuthService/RefreshToken` | POST | Refresh access token | Requires refresh cookie |
+| `/api/v1/memos/{name}` | DELETE | Delete memo | Required |
+| `/api/v1/auth/refresh` | POST | Refresh access token (newer path) | Requires refresh cookie |
+| `/memos.api.v1.AuthService/RefreshToken` | POST | Refresh access token (compat fallback) | Requires refresh cookie |
+| `/api/v1/auth/sessions/current` | GET | Session check (v0.25.x baseline) | Required |
+| `/api/v1/auth/me` | GET | Session check (newer path) | Required |
 
 **Query Parameters** (GET /api/v1/memos):
 - `pageSize`: Max 1000
-- `filter`: CEL expression, e.g., `create_time > "2023-01-01T00:00:00Z"`
+- `pageToken`: Pagination token
+- `state`: `NORMAL` / `ARCHIVED`
+- `orderBy`: preferred sorting field (auto-downgraded if unsupported)
+- `filter`: CEL expression (auto-downgraded if unsupported)
+
+**Compatibility Notes**:
+- Baseline compatibility target: `v0.25.3`
+- Forward target: `v0.26.x+`
+- Runtime capability detection caches endpoint preferences and fallback support flags in `memos-daily-review-capabilities`.
 
 ---
 
@@ -328,11 +340,11 @@ Uses Memos CSS variables for theme compatibility:
 
 ```javascript
 TIME_RANGES: [
-  { value: 'all', label: '全部', labelEn: 'All', months: null },
-  { value: '1year', label: '1年', labelEn: '1 Year', months: 12 },
-  { value: '6months', label: '6个月', labelEn: '6 Months', months: 6 },
-  { value: '3months', label: '3个月', labelEn: '3 Months', months: 3 },
-  { value: '1month', label: '1个月', labelEn: '1 Month', months: 1 },
+  { value: 'all', days: null },
+  { value: '1year', days: 365 },
+  { value: '6months', days: 180 },
+  { value: '3months', days: 90 },
+  { value: '1month', days: 30 },
   // Add new range here
 ],
 ```
@@ -358,8 +370,10 @@ All styles are injected as a single `<style>` tag. Modify CSS rules directly.
 ```javascript
 POOL_TTL_MS: 6 * 60 * 60 * 1000,  // Pool cache TTL (6 hours)
 NO_REPEAT_DAYS: 3,                 // Deduplication days
-MAX_HISTORY_ITEMS: 5000,           // Max history entries
-MAX_CACHED_DECKS: 10,              // Max cached decks
+HISTORY_MAX_ITEMS: 5000,           // Max history entries
+POOL_MAX_PAGES_ALL: 6,             // All-time max pages
+POOL_FETCH_TIME_BUDGET_MS: 4000,   // Early-stop time budget
+DIVERSITY_PENALTY_ENABLED: true,   // Diversity penalty switch
 ```
 
 ---
@@ -383,6 +397,8 @@ localStorage.getItem('memos-daily-review-settings');
 localStorage.getItem('memos-daily-review-pool');
 localStorage.getItem('memos-daily-review-cache');
 localStorage.getItem('memos-daily-review-history');
+localStorage.getItem('memos-daily-review-capabilities');
+localStorage.getItem('memos-daily-review-batch');
 ```
 
 ### Performance Profiling
@@ -414,6 +430,8 @@ Use browser DevTools Network panel to inspect API calls:
 localStorage.removeItem('memos-daily-review-pool');
 localStorage.removeItem('memos-daily-review-cache');
 localStorage.removeItem('memos-daily-review-history');
+localStorage.removeItem('memos-daily-review-capabilities');
+localStorage.removeItem('memos-daily-review-batch');
 ```
 
 ### Force Refresh Pool
@@ -440,11 +458,18 @@ getDailySeed() {
 node --check memos-daily-review-plugin.js
 ```
 
+### Algorithm Regression Tests
+
+```bash
+# Use --test-isolation=none in restricted environments
+node --test --test-isolation=none tests/algorithm.test.js
+```
+
 ---
 
 ## Known Limitations
 
-- Max 1000 memos per fetch (API limitation)
+- Max 1000 memos per API page (`pageSize` cap)
 - Simplified Markdown (no code blocks, quotes, tables, horizontal rules)
 - Nested list depth inferred from indent width (may not fully comply with CommonMark)
 - Cache is date-based, auto-invalidates across days
