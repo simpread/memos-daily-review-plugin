@@ -66,7 +66,10 @@
     CAPABILITY_TTL_MS: 24 * 60 * 60 * 1000,
     REFRESH_RETRY_COOLDOWN_MS: 15 * 60 * 1000,
     NO_REPEAT_DAYS: 3,
-    HISTORY_MAX_ITEMS: 5000,
+    HISTORY_MAX_ITEMS: 3000,
+    HISTORY_SOFT_LIMIT: 2500,
+    HISTORY_CLEANUP_TARGET: 2000,
+    STORAGE_CHECK_INTERVAL_MS: 60000,
     DECK_SCHEMA_VERSION: 3
   };
 
@@ -238,6 +241,30 @@
     t(key) {
       const lang = this.currentLanguage || 'en';
       return this.translations[lang][key] || this.translations['en'][key] || key;
+    }
+  };
+
+  // ============================================
+  // Motion Preference Utils
+  // ============================================
+  const motionUtils = {
+    prefersReducedMotion() {
+      if (typeof window === 'undefined') return false;
+      if (typeof window.matchMedia !== 'function') return false;
+      const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+      return mediaQuery.matches;
+    },
+
+    getAnimationDuration(defaultMs) {
+      return this.prefersReducedMotion() ? 0 : defaultMs;
+    },
+
+    getTransitionDuration(defaultMs) {
+      return this.prefersReducedMotion() ? 0 : defaultMs;
+    },
+
+    shouldAnimate() {
+      return !this.prefersReducedMotion();
     }
   };
 
@@ -869,6 +896,317 @@
   };
 
   // ============================================
+  // Cleanup Service
+  // ============================================
+  const cleanupService = {
+    handlers: new Map(),
+
+    register(key, element, event, handler, options) {
+      if (!this.handlers.has(key)) {
+        this.handlers.set(key, []);
+      }
+      this.handlers.get(key).push({ element, event, handler, options });
+
+      // Compatibility: Use addEventListener if available, fallback to addListener for legacy MediaQueryList
+      if (typeof element.addEventListener === 'function') {
+        element.addEventListener(event, handler, options);
+      } else if (typeof element.addListener === 'function') {
+        // Legacy MediaQueryList API (Safari 5-9, older WebKit)
+        element.addListener(handler);
+      }
+    },
+
+    unregister(key) {
+      const entries = this.handlers.get(key);
+      if (!entries) return;
+
+      for (const { element, event, handler, options } of entries) {
+        if (element && typeof element.removeEventListener === 'function') {
+          element.removeEventListener(event, handler, options);
+        } else if (element && typeof element.removeListener === 'function') {
+          // Legacy MediaQueryList API (Safari 5-9, older WebKit)
+          element.removeListener(handler);
+        }
+      }
+      this.handlers.delete(key);
+    },
+
+    unregisterAll() {
+      for (const key of this.handlers.keys()) {
+        this.unregister(key);
+      }
+    }
+  };
+
+  // ============================================
+  // Tooltip Service
+  // ============================================
+  const tooltipService = {
+    tooltipId: 'daily-review-tooltip',
+    activeElement: null,
+    showTimeout: null,
+    hideTimeout: null,
+    touchTimer: null,
+
+    init() {
+      // Create tooltip element
+      const tooltip = document.createElement('div');
+      tooltip.id = this.tooltipId;
+      tooltip.className = 'daily-review-tooltip';
+      tooltip.setAttribute('role', 'tooltip');
+      document.body.appendChild(tooltip);
+
+      // Add styles
+      const style = document.createElement('style');
+      style.textContent = `
+        .daily-review-tooltip {
+          position: fixed;
+          padding: 6px 10px;
+          background-color: rgba(0, 0, 0, 0.9);
+          color: white;
+          font-size: 12px;
+          border-radius: 4px;
+          white-space: nowrap;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 0.2s;
+          z-index: 10000;
+          max-width: 200px;
+          word-wrap: break-word;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+        .daily-review-tooltip.visible {
+          opacity: 1;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .daily-review-tooltip {
+            transition: none;
+          }
+        }
+        @media (max-width: 640px) {
+          .daily-review-tooltip {
+            font-size: 13px;
+            padding: 8px 12px;
+          }
+        }
+      `;
+      document.head.appendChild(style);
+    },
+
+    show(element, text, delay = 600) {
+      if (!element || !text) return;
+
+      clearTimeout(this.showTimeout);
+      clearTimeout(this.hideTimeout);
+
+      this.showTimeout = setTimeout(() => {
+        const tooltip = document.getElementById(this.tooltipId);
+        if (!tooltip) return;
+
+        tooltip.textContent = text;
+        tooltip.classList.add('visible');
+        this.activeElement = element;
+
+        // Position tooltip
+        this.position(element, tooltip);
+      }, delay);
+    },
+
+    position(element, tooltip) {
+      const rect = element.getBoundingClientRect();
+      const tooltipRect = tooltip.getBoundingClientRect();
+
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const padding = 8;
+
+      // Default: below element, centered
+      let top = rect.bottom + padding;
+      let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2);
+
+      // Horizontal boundary check
+      if (left < padding) {
+        left = padding;
+      } else if (left + tooltipRect.width > viewportWidth - padding) {
+        left = viewportWidth - tooltipRect.width - padding;
+      }
+
+      // Vertical boundary check (if overflows below, show above)
+      if (top + tooltipRect.height > viewportHeight - padding) {
+        top = rect.top - tooltipRect.height - padding;
+      }
+
+      // If also overflows above, show on right side
+      if (top < padding) {
+        top = rect.top + (rect.height / 2) - (tooltipRect.height / 2);
+        left = rect.right + padding;
+
+        // If also overflows right, show on left side
+        if (left + tooltipRect.width > viewportWidth - padding) {
+          left = rect.left - tooltipRect.width - padding;
+        }
+      }
+
+      // Final boundary constraints
+      top = Math.max(padding, Math.min(top, viewportHeight - tooltipRect.height - padding));
+      left = Math.max(padding, Math.min(left, viewportWidth - tooltipRect.width - padding));
+
+      tooltip.style.top = `${top}px`;
+      tooltip.style.left = `${left}px`;
+    },
+
+    hide(delay = 0) {
+      clearTimeout(this.showTimeout);
+      clearTimeout(this.hideTimeout);
+
+      this.hideTimeout = setTimeout(() => {
+        const tooltip = document.getElementById(this.tooltipId);
+        if (tooltip) {
+          tooltip.classList.remove('visible');
+        }
+        this.activeElement = null;
+      }, delay);
+    },
+
+    bindToElement(element) {
+      if (!element) return;
+
+      // Check if already bound to avoid duplicate registration
+      if (element.dataset.tooltipBound === 'true') return;
+      element.dataset.tooltipBound = 'true';
+
+      // Store initial text but don't remove title yet
+      const initialText = element.getAttribute('title') || element.getAttribute('aria-label');
+      if (!initialText) return;
+
+      element.dataset.tooltipText = initialText;
+
+      // Mouse events (desktop) - read text dynamically
+      cleanupService.register('tooltips', element, 'mouseenter', () => {
+        const text = element.dataset.tooltipText || element.getAttribute('aria-label');
+        if (text) this.show(element, text);
+      });
+
+      cleanupService.register('tooltips', element, 'mouseleave', () => {
+        this.hide();
+      });
+
+      // Touch events (mobile)
+      cleanupService.register('tooltips', element, 'touchstart', (e) => {
+        // Long press 500ms to show tooltip
+        this.touchTimer = setTimeout(() => {
+          const text = element.dataset.tooltipText || element.getAttribute('aria-label');
+          if (text) {
+            this.show(element, text, 0);
+            // Haptic feedback if supported
+            if (navigator.vibrate) {
+              navigator.vibrate(10);
+            }
+          }
+        }, 500);
+      });
+
+      cleanupService.register('tooltips', element, 'touchend', () => {
+        clearTimeout(this.touchTimer);
+        // Auto-hide after touch (2 seconds)
+        if (this.activeElement === element) {
+          this.hide(2000);
+        }
+      });
+
+      cleanupService.register('tooltips', element, 'touchcancel', () => {
+        clearTimeout(this.touchTimer);
+        this.hide();
+      });
+
+      // Focus events (keyboard navigation)
+      cleanupService.register('tooltips', element, 'focus', () => {
+        const text = element.dataset.tooltipText || element.getAttribute('aria-label');
+        if (text) this.show(element, text, 300);
+      });
+
+      cleanupService.register('tooltips', element, 'blur', () => {
+        this.hide();
+      });
+    },
+
+    bindAll() {
+      // Clean up old bindings first to avoid duplicates
+      cleanupService.unregister('tooltips');
+
+      // Clear bound markers
+      document.querySelectorAll('[data-tooltip-bound]').forEach(el => {
+        delete el.dataset.tooltipBound;
+      });
+
+      // Bind all icon buttons
+      const selectors = [
+        '.daily-review-icon-btn',
+        '.daily-review-close',
+        '.daily-review-image-nav',
+        '#daily-review-button'
+      ];
+
+      selectors.forEach(selector => {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach(el => this.bindToElement(el));
+      });
+    },
+
+    cleanup() {
+      clearTimeout(this.showTimeout);
+      clearTimeout(this.hideTimeout);
+      clearTimeout(this.touchTimer);
+      const tooltip = document.getElementById(this.tooltipId);
+      if (tooltip) {
+        tooltip.remove();
+      }
+    }
+  };
+
+  // ============================================
+  // Storage Monitor Service
+  // ============================================
+  const storageMonitor = {
+    intervalId: null,
+
+    init() {
+      // Check storage every minute
+      this.intervalId = setInterval(() => {
+        this.checkAndCleanup();
+      }, CONFIG.STORAGE_CHECK_INTERVAL_MS);
+
+      // Also check on init
+      this.checkAndCleanup();
+    },
+
+    checkAndCleanup() {
+      try {
+        const history = historyService.load();
+        if (!history || !history.items) return;
+
+        const itemCount = Object.keys(history.items).length;
+
+        // If over soft limit, gradually clean up to target
+        if (itemCount > CONFIG.HISTORY_SOFT_LIMIT) {
+          console.log(`[DailyReview] History size (${itemCount}) exceeds soft limit (${CONFIG.HISTORY_SOFT_LIMIT}), cleaning up to ${CONFIG.HISTORY_CLEANUP_TARGET}`);
+          const pruned = historyService.prune(history);
+          historyService.save(pruned);
+        }
+      } catch (e) {
+        console.error('[DailyReview] Storage monitor error:', e);
+      }
+    },
+
+    stop() {
+      if (this.intervalId) {
+        clearInterval(this.intervalId);
+        this.intervalId = null;
+      }
+    }
+  };
+
+  // ============================================
   // Settings Service
   // ============================================
   const settingsService = {
@@ -944,7 +1282,8 @@
     prune(history) {
       if (!history || !history.items || typeof history.items !== 'object') return history;
       const ids = Object.keys(history.items);
-      if (ids.length <= CONFIG.HISTORY_MAX_ITEMS) return history;
+      // Use HISTORY_SOFT_LIMIT as the threshold for pruning
+      if (ids.length <= CONFIG.HISTORY_SOFT_LIMIT) return history;
 
       const entries = ids
         .map((id) => {
@@ -955,7 +1294,7 @@
         })
         .sort((a, b) => a.dayTs - b.dayTs);
 
-      const removeCount = entries.length - CONFIG.HISTORY_MAX_ITEMS;
+      const removeCount = entries.length - CONFIG.HISTORY_CLEANUP_TARGET;
       for (let i = 0; i < removeCount; i++) {
         delete history.items[entries[i].id];
       }
@@ -2548,6 +2887,58 @@
           }
         }
 
+        /* ============================================
+           Reduced Motion Support
+           ============================================ */
+        @media (prefers-reduced-motion: reduce) {
+          /* Scope to plugin elements only */
+          #${this.buttonId},
+          #${this.buttonId} *,
+          #${this.overlayId},
+          #${this.overlayId} *,
+          #${this.dialogId},
+          #${this.dialogId} *,
+          #${this.editOverlayId},
+          #${this.editOverlayId} *,
+          #${this.imageOverlayId},
+          #${this.imageOverlayId} * {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+            scroll-behavior: auto !important;
+          }
+
+          #${this.buttonId}:hover,
+          .daily-review-icon-btn:hover,
+          .daily-review-memo-tag:hover,
+          .daily-review-card-content:hover {
+            transform: none !important;
+          }
+
+          .daily-review-icon-btn::before {
+            display: none !important;
+          }
+
+          .daily-review-memo-image:hover {
+            transform: none !important;
+          }
+        }
+
+        /* ============================================
+           Screen Reader Only
+           ============================================ */
+        .sr-only {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border-width: 0;
+        }
+
         .daily-review-error {
           text-align: center;
           padding: 40px 20px;
@@ -2693,19 +3084,26 @@
     createDialog() {
       if (document.getElementById(this.dialogId)) return;
 
+      // Clean up old dialog listeners
+      cleanupService.unregister('dialog');
+
       // Create overlay
       const overlay = document.createElement('div');
       overlay.id = this.overlayId;
-      overlay.addEventListener('click', () => controller.closeDialog());
 
       // Create dialog
       const dialog = document.createElement('div');
       dialog.id = this.dialogId;
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('aria-labelledby', 'daily-review-dialog-title');
+      dialog.setAttribute('tabindex', '-1');
       dialog.innerHTML = `
+        <h2 id="daily-review-dialog-title" class="sr-only">${i18n.t('daily_review')}</h2>
         <div class="daily-review-header">
-          <h2 class="daily-review-title">${i18n.t('daily_review')}</h2>
-          <button class="daily-review-close" title="${i18n.t('close')}">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <h2 class="daily-review-title" aria-hidden="true">${i18n.t('daily_review')}</h2>
+          <button class="daily-review-close" id="daily-review-header-close" title="${i18n.t('close')}" aria-label="${i18n.t('close')}">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
             </svg>
@@ -2726,20 +3124,20 @@
               </div>
               <div class="daily-review-deck-footer">
                 <div class="daily-review-actions">
-                  <button class="daily-review-icon-btn" id="${this.refreshId}" title="${i18n.t('shuffle')}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <button class="daily-review-icon-btn" id="${this.refreshId}" title="${i18n.t('shuffle')}" aria-label="${i18n.t('shuffle')}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
                       <path d="M21 3v5h-5"></path>
                     </svg>
                   </button>
-                  <button class="daily-review-icon-btn" id="${this.editId}" title="${i18n.t('edit_memo')}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <button class="daily-review-icon-btn" id="${this.editId}" title="${i18n.t('edit_memo')}" aria-label="${i18n.t('edit_memo')}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M12 20h9"></path>
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
                     </svg>
                   </button>
-                  <button class="daily-review-icon-btn delete-btn" id="${this.deleteId}" title="${i18n.t('delete_memo')}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <button class="daily-review-icon-btn delete-btn" id="${this.deleteId}" title="${i18n.t('delete_memo')}" aria-label="${i18n.t('delete_memo')}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <polyline points="3 6 5 6 21 6"></polyline>
                       <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
                       <path d="M10 11v6"></path>
@@ -2749,14 +3147,14 @@
                   </button>
                 </div>
                 <div class="daily-review-pager">
-                  <button class="daily-review-icon-btn" id="${this.prevId}" title="${i18n.t('previous')}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <button class="daily-review-icon-btn" id="${this.prevId}" title="${i18n.t('previous')}" aria-label="${i18n.t('previous')}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                       <path d="M15 18l-6-6 6-6"></path>
                     </svg>
                   </button>
                   <div class="daily-review-counter" id="${this.counterId}">0 / 0</div>
-                  <button class="daily-review-icon-btn" id="${this.nextId}" title="${i18n.t('next')}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <button class="daily-review-icon-btn" id="${this.nextId}" title="${i18n.t('next')}" aria-label="${i18n.t('next')}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                       <path d="M9 18l6-6-6-6"></path>
                     </svg>
                   </button>
@@ -2792,35 +3190,40 @@
           </div>
         </div>
         <div class="daily-review-footer">
-          <button class="daily-review-btn daily-review-btn-primary" id="daily-review-close-btn">${i18n.t('close')}</button>
+          <button class="daily-review-btn daily-review-btn-primary" id="daily-review-close-btn" aria-label="${i18n.t('close')}">${i18n.t('close')}</button>
         </div>
       `;
 
       // Prevent dialog clicks from closing
       dialog.addEventListener('click', (e) => e.stopPropagation());
 
-      // Bind events
-      dialog.querySelector('.daily-review-close').addEventListener('click', () => controller.closeDialog());
-      dialog.querySelector('#daily-review-close-btn').addEventListener('click', () => controller.closeDialog());
-      dialog.querySelector(`#${this.refreshId}`).addEventListener('click', () => controller.newBatch().catch(err => console.error('Failed to generate new batch:', err)));
-      dialog.querySelector(`#${this.editId}`).addEventListener('click', () => controller.editCurrent());
-      dialog.querySelector(`#${this.deleteId}`).addEventListener('click', () => controller.deleteCurrent());
-      dialog.querySelector(`#${this.prevId}`).addEventListener('click', () => controller.prev());
-      dialog.querySelector(`#${this.nextId}`).addEventListener('click', () => controller.next());
+      // Bind events using cleanupService
+      const closeHandler = () => controller.closeDialog();
+      cleanupService.register('dialog', overlay, 'click', closeHandler);
+      cleanupService.register('dialog', dialog.querySelector('#daily-review-header-close'), 'click', closeHandler);
+      cleanupService.register('dialog', dialog.querySelector('#daily-review-close-btn'), 'click', closeHandler);
+      cleanupService.register('dialog', dialog.querySelector(`#${this.refreshId}`), 'click',
+        () => controller.newBatch().catch(err => console.error('Failed to generate new batch:', err)));
+      cleanupService.register('dialog', dialog.querySelector(`#${this.editId}`), 'click',
+        () => controller.editCurrent());
+      cleanupService.register('dialog', dialog.querySelector(`#${this.deleteId}`), 'click',
+        () => controller.deleteCurrent());
+      cleanupService.register('dialog', dialog.querySelector(`#${this.prevId}`), 'click',
+        () => controller.prev());
+      cleanupService.register('dialog', dialog.querySelector(`#${this.nextId}`), 'click',
+        () => controller.next());
 
       dialog.querySelectorAll('.daily-review-tab').forEach((tab) => {
-        tab.addEventListener('click', () => {
-          this.switchTab(tab.dataset.tab);
-        });
+        cleanupService.register('dialog', tab, 'click', () => this.switchTab(tab.dataset.tab));
       });
 
-      dialog.querySelector('#daily-review-time-range').addEventListener('change', (e) => {
+      cleanupService.register('dialog', dialog.querySelector('#daily-review-time-range'), 'change', (e) => {
         const settings = settingsService.load();
         settings.timeRange = e.target.value;
         settingsService.save(settings);
         controller.onSettingsChanged().catch(err => console.error('Settings change failed:', err));
       });
-      dialog.querySelector('#daily-review-count').addEventListener('change', (e) => {
+      cleanupService.register('dialog', dialog.querySelector('#daily-review-count'), 'change', (e) => {
         const settings = settingsService.load();
         settings.count = parseInt(e.target.value, 10);
         settingsService.save(settings);
@@ -2830,8 +3233,12 @@
       // Language selector
       const languageSelect = dialog.querySelector('.daily-review-language-select');
       if (languageSelect) {
-        languageSelect.addEventListener('change', (e) => {
+        cleanupService.register('dialog', languageSelect, 'change', (e) => {
           i18n.setLanguage(e.target.value);
+
+          // Clean up all dialog listeners before recreating
+          cleanupService.unregister('dialog');
+
           // Recreate dialog to apply new language
           controller.closeDialog();
           const overlay = document.getElementById(ui.overlayId);
@@ -2845,6 +3252,11 @@
 
       document.body.appendChild(overlay);
       document.body.appendChild(dialog);
+
+      // Bind tooltips after DOM insertion
+      requestAnimationFrame(() => {
+        tooltipService.bindAll();
+      });
     },
 
     createEditDialog() {
@@ -2852,25 +3264,28 @@
 
       const overlay = document.createElement('div');
       overlay.id = this.editOverlayId;
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'daily-review-edit-title');
       overlay.addEventListener('click', () => controller.closeEditor());
 
       const dialog = document.createElement('div');
       dialog.id = this.editDialogId;
       dialog.innerHTML = `
         <div class="daily-review-edit-header">
-          <div class="daily-review-edit-title">${i18n.t('edit_title')}</div>
+          <h3 class="daily-review-edit-title" id="daily-review-edit-title">${i18n.t('edit_title')}</h3>
           <div class="daily-review-edit-status" id="${this.editStatusId}"></div>
-          <button class="daily-review-close" title="${i18n.t('close')}">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="daily-review-close" title="${i18n.t('close')}" aria-label="${i18n.t('close')}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
             </svg>
           </button>
         </div>
-        <textarea class="daily-review-edit-textarea" id="${this.editTextareaId}" spellcheck="false"></textarea>
+        <textarea class="daily-review-edit-textarea" id="${this.editTextareaId}" spellcheck="false" aria-label="${i18n.t('edit_memo')}"></textarea>
         <div class="daily-review-edit-footer">
-          <button class="daily-review-btn daily-review-btn-secondary" id="${this.editCancelId}">${i18n.t('cancel')}</button>
-          <button class="daily-review-btn daily-review-btn-primary" id="${this.editSaveId}">${i18n.t('save')}</button>
+          <button class="daily-review-btn daily-review-btn-secondary" id="${this.editCancelId}" aria-label="${i18n.t('cancel')}">${i18n.t('cancel')}</button>
+          <button class="daily-review-btn daily-review-btn-primary" id="${this.editSaveId}" aria-label="${i18n.t('save')}">${i18n.t('save')}</button>
         </div>
       `;
 
@@ -2881,6 +3296,11 @@
       dialog.querySelector('.daily-review-close').addEventListener('click', () => controller.closeEditor());
       document.getElementById(this.editCancelId).addEventListener('click', () => controller.closeEditor());
       document.getElementById(this.editSaveId).addEventListener('click', () => controller.saveEditor());
+
+      // Bind tooltips after DOM insertion
+      requestAnimationFrame(() => {
+        tooltipService.bindAll();
+      });
     },
 
     openEditor(content) {
@@ -2952,25 +3372,28 @@
 
       const overlay = document.createElement('div');
       overlay.id = this.imageOverlayId;
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label', i18n.t('click_to_zoom'));
       overlay.addEventListener('click', () => this.closeImagePreview());
 
       const dialog = document.createElement('div');
       dialog.id = this.imageDialogId;
       dialog.innerHTML = `
-        <img id="${this.imagePreviewId}" alt="" title="${i18n.t('click_to_zoom')}">
+        <img id="${this.imagePreviewId}" alt="" title="${i18n.t('click_to_zoom')}" aria-label="${i18n.t('click_to_zoom')}">
         <div id="${this.imageCaptionId}"></div>
-        <button class="daily-review-image-nav" id="${this.imagePrevId}" title="${i18n.t('previous')}">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button class="daily-review-image-nav" id="${this.imagePrevId}" title="${i18n.t('previous')}" aria-label="${i18n.t('previous')}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path d="M15 18l-6-6 6-6"></path>
           </svg>
         </button>
-        <button class="daily-review-image-nav" id="${this.imageNextId}" title="${i18n.t('next')}">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button class="daily-review-image-nav" id="${this.imageNextId}" title="${i18n.t('next')}" aria-label="${i18n.t('next')}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path d="M9 18l6-6-6-6"></path>
           </svg>
         </button>
-        <button id="${this.imageCloseId}" title="${i18n.t('close')}">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button id="${this.imageCloseId}" title="${i18n.t('close')}" aria-label="${i18n.t('close')}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
           </svg>
@@ -2980,6 +3403,11 @@
       dialog.addEventListener('click', (event) => event.stopPropagation());
       overlay.appendChild(dialog);
       document.body.appendChild(overlay);
+
+      // Bind tooltips after DOM insertion
+      requestAnimationFrame(() => {
+        tooltipService.bindAll();
+      });
 
       // Add zoom functionality
       const img = document.getElementById(this.imagePreviewId);
@@ -3026,6 +3454,19 @@
         requestAnimationFrame(() => {
           overlay.classList.add('visible');
           dialog.classList.add('visible');
+
+          // Move focus into dialog for keyboard and screen reader users.
+          const focusables = dialog.querySelectorAll(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          );
+          const target = focusables.length > 0 ? focusables[0] : dialog;
+          if (target && typeof target.focus === 'function') {
+            try {
+              target.focus({ preventScroll: true });
+            } catch (e) {
+              target.focus();
+            }
+          }
         });
       }
     },
@@ -3081,12 +3522,20 @@
       this.renderMemoCard(deckMemos[safeIndex], safeIndex, deckMemos.length);
 
       // Add fade-in animation for new batch
-      requestAnimationFrame(() => {
+      if (motionUtils.shouldAnimate()) {
+        requestAnimationFrame(() => {
+          const cardFront = document.querySelector('.daily-review-card-front');
+          if (cardFront) {
+            cardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
+          }
+        });
+      } else {
+        // No animation mode: ensure card is visible
         const cardFront = document.querySelector('.daily-review-card-front');
         if (cardFront) {
-          cardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
+          cardFront.style.opacity = '1';
         }
-      });
+      }
     },
 
     renderMemoCard(memo, index, total) {
@@ -3156,17 +3605,19 @@
 
       if (counter) {
         counter.textContent = `${index + 1} / ${total}`;
-        // Animate counter change
-        counter.style.animation = 'none';
-        requestAnimationFrame(() => {
-          counter.style.animation = '';
-          counter.style.transform = 'scale(1.1)';
-          counter.style.opacity = '0.7';
-          setTimeout(() => {
-            counter.style.transform = 'scale(1)';
-            counter.style.opacity = '1';
-          }, 50);
-        });
+        // Animate counter change only if motion is allowed
+        if (motionUtils.shouldAnimate()) {
+          counter.style.animation = 'none';
+          requestAnimationFrame(() => {
+            counter.style.animation = '';
+            counter.style.transform = 'scale(1.1)';
+            counter.style.opacity = '0.7';
+            setTimeout(() => {
+              counter.style.transform = 'scale(1)';
+              counter.style.opacity = '1';
+            }, 50);
+          });
+        }
       }
       if (prev) prev.disabled = index <= 0;
       if (next) next.disabled = index >= total - 1;
@@ -3176,13 +3627,19 @@
       if (edit) {
         const editable = !!memo.name;
         edit.disabled = !editable;
-        edit.title = editable ? i18n.t('edit_memo') : i18n.t('edit_not_supported');
+        const label = editable ? i18n.t('edit_memo') : i18n.t('edit_not_supported');
+        edit.title = label;
+        edit.setAttribute('aria-label', label);
+        edit.dataset.tooltipText = label;
       }
 
       const del = document.getElementById(this.deleteId);
       if (del) {
         del.disabled = !memo.name;
-        del.title = i18n.t('delete_memo');
+        const label = i18n.t('delete_memo');
+        del.title = label;
+        del.setAttribute('aria-label', label);
+        del.dataset.tooltipText = label;
       }
 
       this.bindImagePreview();
@@ -3245,23 +3702,29 @@
       const nextIndex = this.activeImageIndex + step;
       if (nextIndex < 0 || nextIndex >= images.length) return;
 
-      // Add fade-out transition
       const img = document.getElementById(this.imagePreviewId);
       if (img) {
-        img.style.opacity = '0';
         img.classList.remove('zoomed');
-      }
 
-      // Wait for fade-out, then update
-      setTimeout(() => {
-        this.activeImageIndex = nextIndex;
-        this.updateImagePreview();
+        const transitionDuration = motionUtils.getTransitionDuration(200);
 
-        // Fade back in
-        if (img) {
-          img.style.opacity = '1';
+        if (transitionDuration > 0) {
+          // Add fade-out transition
+          img.style.opacity = '0';
+
+          // Wait for fade-out, then update
+          setTimeout(() => {
+            this.activeImageIndex = nextIndex;
+            this.updateImagePreview();
+            // Fade back in
+            img.style.opacity = '1';
+          }, transitionDuration);
+        } else {
+          // No animation: instant update
+          this.activeImageIndex = nextIndex;
+          this.updateImagePreview();
         }
-      }, 200);
+      }
     },
 
     updateImagePreview() {
@@ -3304,6 +3767,7 @@
     keydownHandler: null,
     loadingTimer: null,
     animationInProgress: false,
+    lastFocusedElement: null,
 
     init() {
       try {
@@ -3316,11 +3780,37 @@
         ui.createImagePreview();
         ui.createEditDialog();
 
+        // Initialize tooltip service
+        tooltipService.init();
+
+        // Initialize storage monitor
+        storageMonitor.init();
+
         this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error));
         this.patchRouteEvents();
-        window.addEventListener('popstate', () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
-        window.addEventListener('daily-review-routechange', () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
-        window.addEventListener('focus', () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
+
+        // Use cleanupService to register global listeners
+        cleanupService.register('global', window, 'popstate',
+          () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
+        cleanupService.register('global', window, 'daily-review-routechange',
+          () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
+        cleanupService.register('global', window, 'focus',
+          () => this.updateEntryVisibility().catch((error) => console.error('Failed to update entry visibility:', error)));
+
+        // Listen for motion preference changes at runtime
+        if (typeof window !== 'undefined' && window.matchMedia) {
+          const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+          const handleMotionChange = (e) => {
+            console.log('[DailyReview] Motion preference changed:', e.matches ? 'reduced' : 'normal');
+          };
+          cleanupService.register('global', motionQuery, 'change', handleMotionChange);
+        }
+
+        // Clean up storage monitor on page unload
+        cleanupService.register('global', window, 'beforeunload', () => {
+          storageMonitor.stop();
+        });
+
         this.bindKeyboardShortcuts();
       } catch (error) {
         console.error('Failed to initialize Daily Review plugin:', error);
@@ -3328,7 +3818,10 @@
     },
 
     bindKeyboardShortcuts() {
-      if (this.keydownHandler) return;
+      // Clean up old listener
+      if (this.keydownHandler) {
+        cleanupService.unregister('keyboard');
+      }
 
       const isTextInput = (target) => {
         const el = target && target.nodeType === 1 ? target : null;
@@ -3336,6 +3829,20 @@
         const tag = (el.tagName || '').toUpperCase();
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
         return !!el.isContentEditable;
+      };
+
+      const getDialogFocusableElements = () => {
+        const dialog = document.getElementById(ui.dialogId);
+        if (!dialog || typeof dialog.querySelectorAll !== 'function') return [];
+        const nodes = dialog.querySelectorAll(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        return Array.from(nodes).filter((el) => {
+          if (!el || typeof el.focus !== 'function') return false;
+          if (el.disabled) return false;
+          if (typeof el.getAttribute === 'function' && el.getAttribute('aria-hidden') === 'true') return false;
+          return true;
+        });
       };
 
       this.keydownHandler = (event) => {
@@ -3354,6 +3861,49 @@
             this.closeDialog();
           }
           event.preventDefault();
+          return;
+        }
+
+        // Keep tab focus inside the primary dialog when sub-overlays are closed.
+        if (key === 'Tab' && !ui.isImagePreviewOpen() && !ui.isEditorOpen()) {
+          const dialog = document.getElementById(ui.dialogId);
+          if (dialog) {
+            const focusables = getDialogFocusableElements();
+            if (focusables.length === 0) {
+              if (typeof dialog.focus === 'function') {
+                try {
+                  dialog.focus({ preventScroll: true });
+                } catch (e) {
+                  dialog.focus();
+                }
+              }
+              event.preventDefault();
+              return;
+            }
+
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            const active = document.activeElement;
+            const isInsideDialog = typeof dialog.contains === 'function' ? dialog.contains(active) : false;
+
+            if (event.shiftKey) {
+              if (active === first || !isInsideDialog) {
+                try {
+                  last.focus({ preventScroll: true });
+                } catch (e) {
+                  last.focus();
+                }
+                event.preventDefault();
+              }
+            } else if (active === last || !isInsideDialog) {
+              try {
+                first.focus({ preventScroll: true });
+              } catch (e) {
+                first.focus();
+              }
+              event.preventDefault();
+            }
+          }
           return;
         }
 
@@ -3390,7 +3940,7 @@
         }
       };
 
-      document.addEventListener('keydown', this.keydownHandler);
+      cleanupService.register('keyboard', document, 'keydown', this.keydownHandler);
     },
 
     async openDialog() {
@@ -3403,7 +3953,13 @@
         return;
       }
 
+      const currentFocus = document.activeElement;
+      this.lastFocusedElement = currentFocus && typeof currentFocus.focus === 'function' ? currentFocus : null;
+
       this.isOpen = true;
+      // Rebind keyboard shortcuts when opening dialog
+      this.bindKeyboardShortcuts();
+
       // Load batch state from localStorage (persists across dialog open/close)
       this.deckBatch = batchService.load();
       this.deckIndex = 0;
@@ -3424,6 +3980,17 @@
       ui.closeEditor();
       ui.closeImagePreview();
       ui.hideDialog();
+      const target = this.lastFocusedElement;
+      this.lastFocusedElement = null;
+      if (target && typeof target.focus === 'function') {
+        try {
+          target.focus({ preventScroll: true });
+        } catch (e) {
+          target.focus();
+        }
+      }
+      // Note: Keep keyboard listener registered but guarded by isOpen check
+      // This avoids rebinding issues and the isOpen check prevents execution when closed
     },
 
     patchRouteEvents() {
@@ -3474,7 +4041,7 @@
         refreshBtn.disabled = true;
         // Add rotation animation to shuffle button
         const svg = refreshBtn.querySelector('svg');
-        if (svg) {
+        if (svg && motionUtils.shouldAnimate()) {
           svg.style.animation = 'daily-review-spin 0.8s linear infinite';
         }
       }
@@ -3526,12 +4093,14 @@
 
       // Add fade-out animation before deletion
       const cardFront = document.querySelector('.daily-review-card-front');
-      if (cardFront) {
+      const animationDuration = motionUtils.getAnimationDuration(300);
+
+      if (cardFront && animationDuration > 0) {
         cardFront.style.animation = 'daily-review-fade-out 0.3s ease-out forwards';
       }
 
-      // Wait for animation to complete
-      await new Promise(resolve => setTimeout(resolve, 300));
+      // Wait for animation to complete (or skip if no animation)
+      await new Promise(resolve => setTimeout(resolve, animationDuration));
 
       try {
         await apiService.deleteMemo(memo.name);
@@ -3573,12 +4142,14 @@
         ui.renderDeck(this.deckMemos, this.deckIndex);
 
         // Add fade-in animation for new card
-        requestAnimationFrame(() => {
-          const newCardFront = document.querySelector('.daily-review-card-front');
-          if (newCardFront) {
-            newCardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
-          }
-        });
+        if (motionUtils.shouldAnimate()) {
+          requestAnimationFrame(() => {
+            const newCardFront = document.querySelector('.daily-review-card-front');
+            if (newCardFront) {
+              newCardFront.style.animation = 'daily-review-fade-in 0.3s ease-out forwards';
+            }
+          });
+        }
       } catch (e) {
         console.error('Failed to delete memo:', e);
         alert(i18n.t('delete_failed'));
@@ -3691,8 +4262,12 @@
         return;
       }
 
+      const animationDuration = motionUtils.getAnimationDuration(200);
+
       // Add exit animation (slide out right)
-      cardFront.style.animation = 'daily-review-slide-out-right 0.2s ease-out forwards';
+      if (animationDuration > 0 && cardFront) {
+        cardFront.style.animation = 'daily-review-slide-out-right 0.2s ease-out forwards';
+      }
 
       setTimeout(() => {
         this.deckIndex -= 1;
@@ -3700,19 +4275,23 @@
         this.markViewedCurrent();
 
         // Add entrance animation (slide in from left)
-        requestAnimationFrame(() => {
-          const newCardFront = document.querySelector('.daily-review-card-front');
-          if (newCardFront) {
-            newCardFront.style.animation = 'daily-review-slide-in-left 0.2s ease-out forwards';
-            setTimeout(() => {
-              newCardFront.style.animation = '';
+        if (motionUtils.shouldAnimate()) {
+          requestAnimationFrame(() => {
+            const newCardFront = document.querySelector('.daily-review-card-front');
+            if (newCardFront) {
+              newCardFront.style.animation = 'daily-review-slide-in-left 0.2s ease-out forwards';
+              setTimeout(() => {
+                newCardFront.style.animation = '';
+                this.animationInProgress = false;
+              }, animationDuration);
+            } else {
               this.animationInProgress = false;
-            }, 200);
-          } else {
-            this.animationInProgress = false;
-          }
-        });
-      }, 200);
+            }
+          });
+        } else {
+          this.animationInProgress = false;
+        }
+      }, animationDuration);
     },
 
     next() {
@@ -3730,8 +4309,12 @@
         return;
       }
 
+      const animationDuration = motionUtils.getAnimationDuration(200);
+
       // Add exit animation (slide out left)
-      cardFront.style.animation = 'daily-review-slide-out-left 0.2s ease-out forwards';
+      if (animationDuration > 0 && cardFront) {
+        cardFront.style.animation = 'daily-review-slide-out-left 0.2s ease-out forwards';
+      }
 
       setTimeout(() => {
         this.deckIndex += 1;
@@ -3739,19 +4322,23 @@
         this.markViewedCurrent();
 
         // Add entrance animation (slide in from right)
-        requestAnimationFrame(() => {
-          const newCardFront = document.querySelector('.daily-review-card-front');
-          if (newCardFront) {
-            newCardFront.style.animation = 'daily-review-slide-in-right 0.2s ease-out forwards';
-            setTimeout(() => {
-              newCardFront.style.animation = '';
+        if (motionUtils.shouldAnimate()) {
+          requestAnimationFrame(() => {
+            const newCardFront = document.querySelector('.daily-review-card-front');
+            if (newCardFront) {
+              newCardFront.style.animation = 'daily-review-slide-in-right 0.2s ease-out forwards';
+              setTimeout(() => {
+                newCardFront.style.animation = '';
+                this.animationInProgress = false;
+              }, animationDuration);
+            } else {
               this.animationInProgress = false;
-            }, 200);
-          } else {
-            this.animationInProgress = false;
-          }
-        });
-      }, 200);
+            }
+          });
+        } else {
+          this.animationInProgress = false;
+        }
+      }, animationDuration);
     },
 
     markViewedCurrent() {
