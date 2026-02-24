@@ -75,6 +75,7 @@ Check login status, or adjust time range to "All"
 
 ## Documentation
 
+- [Changelog](./CHANGELOG.md)
 - [Development Guide (English)](./CONTRIBUTING.md)
 - [开发指南（中文）](./docs/zh-CN/CONTRIBUTING.zh-CN.md)
 - [AI Development Reference](./CLAUDE.md)

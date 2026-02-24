@@ -32,6 +32,7 @@
     LANGUAGE_KEY: 'memos-daily-review-language',
     BATCH_KEY: 'memos-daily-review-batch',
     CAPABILITY_KEY: 'memos-daily-review-capabilities',
+    CHECK_COUNT_KEY: 'memos-daily-review-check-count',
     AUTH_TOKEN_KEY: 'memos_access_token',
     AUTH_EXPIRES_KEY: 'memos_token_expires_at',
     DEFAULT_TIME_RANGE: '6months',
@@ -486,6 +487,105 @@
       return html;
     },
 
+    // ============================================
+    // Indent Depth Calculator
+    // ============================================
+    /**
+     * Manages indentation width stack and calculates list depth
+     */
+    IndentDepthCalculator: {
+      create() {
+        return {
+          stack: [],
+
+          getDepth(indentWidth) {
+            if (this.stack.length === 0) {
+              this.stack.push(indentWidth);
+              return 0;
+            }
+
+            const lastIndent = this.stack[this.stack.length - 1];
+            if (indentWidth > lastIndent) {
+              this.stack.push(indentWidth);
+              return this.stack.length - 1;
+            }
+
+            while (this.stack.length > 1 &&
+                   indentWidth < this.stack[this.stack.length - 1]) {
+              this.stack.pop();
+            }
+
+            if (indentWidth > this.stack[this.stack.length - 1]) {
+              this.stack.push(indentWidth);
+            } else if (this.stack.length === 1 && indentWidth < this.stack[0]) {
+              this.stack[0] = indentWidth;
+            }
+
+            return this.stack.length - 1;
+          },
+
+          reset() {
+            this.stack.length = 0;
+          }
+        };
+      }
+    },
+
+    // ============================================
+    // List Level Manager
+    // ============================================
+    /**
+     * Manages list stack and ensures correct nesting
+     */
+    ListLevelManager: {
+      create(fragment) {
+        return {
+          listStack: [],
+          lastLiByLevel: [],
+
+          ensureLevel(listType, level, fragment) {
+            if (level < 0) level = 0;
+
+            // Drop deeper levels
+            while (this.listStack.length > level + 1) {
+              this.listStack.pop();
+              this.lastLiByLevel.pop();
+            }
+
+            // Handle list type change
+            if (this.listStack[level] &&
+                this.listStack[level].type !== listType) {
+              this.listStack.length = level;
+              this.lastLiByLevel.length = level;
+            }
+
+            // Create missing levels
+            for (let current = this.listStack.length; current <= level; current++) {
+              const listEl = document.createElement(listType);
+              if (current === 0) {
+                fragment.appendChild(listEl);
+              } else {
+                const parentLi = this.lastLiByLevel[current - 1];
+                (parentLi || fragment).appendChild(listEl);
+              }
+              this.listStack.push({ type: listType, el: listEl });
+            }
+          },
+
+          addItem(depth, li) {
+            this.listStack[depth].el.appendChild(li);
+            this.lastLiByLevel[depth] = li;
+            this.lastLiByLevel.length = depth + 1;
+          },
+
+          reset() {
+            this.listStack.length = 0;
+            this.lastLiByLevel.length = 0;
+          }
+        };
+      }
+    },
+
     // Simple markdown to HTML converter (headings, lists, paragraphs)
     markdownToHtml(text) {
       const escaped = this.escapeHtml(text || '');
@@ -494,9 +594,8 @@
 
       const container = document.createElement('div');
       const fragment = document.createDocumentFragment();
-      const listStack = [];
-      const lastLiByLevel = [];
-      const indentWidthStack = [];
+      const depthCalc = this.IndentDepthCalculator.create();
+      const listMgr = this.ListLevelManager.create(fragment);
       let pendingBlankLineInList = false;
 
       const flushParagraph = () => {
@@ -509,64 +608,9 @@
       };
 
       const closeAllLists = () => {
-        listStack.length = 0;
-        lastLiByLevel.length = 0;
-        indentWidthStack.length = 0;
+        listMgr.reset();
+        depthCalc.reset();
         pendingBlankLineInList = false;
-      };
-
-      const getListDepthForIndent = (indentWidth) => {
-        if (indentWidthStack.length === 0) {
-          indentWidthStack.push(indentWidth);
-          return 0;
-        }
-
-        const lastIndent = indentWidthStack[indentWidthStack.length - 1];
-        if (indentWidth > lastIndent) {
-          indentWidthStack.push(indentWidth);
-          return indentWidthStack.length - 1;
-        }
-
-        while (indentWidthStack.length > 1 && indentWidth < indentWidthStack[indentWidthStack.length - 1]) {
-          indentWidthStack.pop();
-        }
-
-        if (indentWidth > indentWidthStack[indentWidthStack.length - 1]) {
-          indentWidthStack.push(indentWidth);
-        } else if (indentWidthStack.length === 1 && indentWidth < indentWidthStack[0]) {
-          // Adjust base indentation for top-level lists.
-          indentWidthStack[0] = indentWidth;
-        }
-
-        return indentWidthStack.length - 1;
-      };
-
-      const ensureListForLevel = (listType, level) => {
-        if (level < 0) level = 0;
-
-        // Drop deeper levels if indentation decreased.
-        while (listStack.length > level + 1) {
-          listStack.pop();
-          lastLiByLevel.pop();
-        }
-
-        // If list type changed at the same level, start a new list.
-        if (listStack[level] && listStack[level].type !== listType) {
-          listStack.length = level;
-          lastLiByLevel.length = level;
-        }
-
-        // Create missing list levels.
-        for (let current = listStack.length; current <= level; current++) {
-          const listEl = document.createElement(listType);
-          if (current === 0) {
-            fragment.appendChild(listEl);
-          } else {
-            const parentLi = lastLiByLevel[current - 1];
-            (parentLi || fragment).appendChild(listEl);
-          }
-          listStack.push({ type: listType, el: listEl });
-        }
       };
 
       for (const line of lines) {
@@ -575,9 +619,10 @@
         const indentWidth = leading.length;
         const trimmed = line.trim();
 
+        // Empty line handling
         if (!trimmed) {
           flushParagraph();
-          if (listStack.length > 0) {
+          if (listMgr.listStack.length > 0) {
             pendingBlankLineInList = true;
           } else {
             closeAllLists();
@@ -585,6 +630,7 @@
           continue;
         }
 
+        // Heading handling
         const headingMatch = trimmed.match(REGEX_PATTERNS.heading);
         if (headingMatch) {
           const level = headingMatch[1].length;
@@ -596,44 +642,43 @@
           continue;
         }
 
+        // Unordered list handling
         const ulMatch = trimmed.match(REGEX_PATTERNS.unorderedList);
         if (ulMatch) {
           flushParagraph();
           pendingBlankLineInList = false;
-          const depth = getListDepthForIndent(indentWidth);
-          ensureListForLevel('ul', depth);
+          const depth = depthCalc.getDepth(indentWidth);
+          listMgr.ensureLevel('ul', depth, fragment);
           const li = document.createElement('li');
           li.innerHTML = this.formatInlineMarkdown(ulMatch[1]);
-          listStack[depth].el.appendChild(li);
-          lastLiByLevel[depth] = li;
-          lastLiByLevel.length = depth + 1;
+          listMgr.addItem(depth, li);
           continue;
         }
 
+        // Ordered list handling
         const olMatch = trimmed.match(REGEX_PATTERNS.orderedList);
         if (olMatch) {
           flushParagraph();
           pendingBlankLineInList = false;
-          const depth = getListDepthForIndent(indentWidth);
-          ensureListForLevel('ol', depth);
+          const depth = depthCalc.getDepth(indentWidth);
+          listMgr.ensureLevel('ol', depth, fragment);
           const li = document.createElement('li');
           li.innerHTML = this.formatInlineMarkdown(olMatch[2]);
-          listStack[depth].el.appendChild(li);
-          lastLiByLevel[depth] = li;
-          lastLiByLevel.length = depth + 1;
+          listMgr.addItem(depth, li);
           continue;
         }
 
-        // If we're inside a list and this line is indented (continuation of last li), append to it.
-        // Only treat as continuation if it's not a heading or other block element
-        if (listStack.length > 0 && indentWidth > 0 && !trimmed.match(/^#{1,6}\s/)) {
-          const lastLi = lastLiByLevel[listStack.length - 1];
+        // List continuation handling
+        if (listMgr.listStack.length > 0 && indentWidth > 0 &&
+            !trimmed.match(/^#{1,6}\s/)) {
+          const lastLi = listMgr.lastLiByLevel[listMgr.listStack.length - 1];
           if (lastLi) {
             lastLi.innerHTML += ' ' + this.formatInlineMarkdown(trimmed);
             continue;
           }
         }
 
+        // Paragraph handling
         closeAllLists();
         paragraphLines.push(this.formatInlineMarkdown(trimmed));
       }
@@ -788,6 +833,11 @@
 
     handleQuotaExceeded(key, value) {
       try {
+        // Log storage state before cleanup
+        console.warn('[DailyReview] localStorage quota exceeded!');
+        console.warn('[DailyReview] Storage state before cleanup:');
+        this.logStorageReport();
+
         // Strategy 1: Clear old deck cache (keep only most recent)
         const deckStore = this.getItem(CONFIG.CACHE_KEY);
         if (deckStore) {
@@ -892,6 +942,78 @@
         console.error('Failed to remove from localStorage:', e);
         return false;
       }
+    },
+
+    /**
+     * Calculate storage statistics for all plugin keys
+     * @returns {Object} Storage statistics with keys, sizes, and totals
+     */
+    calculateStorageStats() {
+      const stats = { keys: {}, totalSize: 0, totalSizeKB: 0 };
+      const pluginKeys = [
+        CONFIG.STORAGE_KEY,
+        CONFIG.CACHE_KEY,
+        CONFIG.POOL_KEY,
+        CONFIG.HISTORY_KEY,
+        CONFIG.CAPABILITY_KEY,
+        CONFIG.BATCH_KEY
+      ];
+
+      for (const key of pluginKeys) {
+        try {
+          const value = localStorage.getItem(key);
+          if (value) {
+            // Use Blob API to calculate accurate byte size
+            const sizeBytes = new Blob([value]).size;
+            stats.keys[key] = {
+              sizeBytes,
+              sizeKB: (sizeBytes / 1024).toFixed(2)
+            };
+            stats.totalSize += sizeBytes;
+          }
+        } catch (e) {
+          // Skip keys that fail to read
+          console.error(`[DailyReview] Failed to read key ${key}:`, e);
+        }
+      }
+
+      stats.totalSizeKB = (stats.totalSize / 1024).toFixed(2);
+      return stats;
+    },
+
+    /**
+     * Generate human-readable storage report
+     * @returns {string} Formatted storage report
+     */
+    getStorageReport() {
+      const stats = this.calculateStorageStats();
+      const lines = [
+        '[DailyReview] Storage Usage Report',
+        '='.repeat(50)
+      ];
+
+      // Sort keys by size (descending)
+      const sorted = Object.entries(stats.keys)
+        .sort((a, b) => b[1].sizeBytes - a[1].sizeBytes);
+
+      for (const [key, info] of sorted) {
+        const shortKey = key.replace('memos-daily-review-', '');
+        const percent = stats.totalSize > 0
+          ? ((info.sizeBytes / stats.totalSize) * 100).toFixed(1)
+          : '0.0';
+        lines.push(`  ${shortKey.padEnd(20)} ${info.sizeKB.padStart(8)} KB (${percent.padStart(5)}%)`);
+      }
+
+      lines.push('  ' + '-'.repeat(46));
+      lines.push(`  ${'Total'.padEnd(20)} ${stats.totalSizeKB.padStart(8)} KB`);
+      return lines.join('\n');
+    },
+
+    /**
+     * Log storage report to console
+     */
+    logStorageReport() {
+      console.log(this.getStorageReport());
     }
   };
 
@@ -1169,8 +1291,15 @@
   // ============================================
   const storageMonitor = {
     intervalId: null,
+    checkCount: 0,
 
     init() {
+      // Load persisted check count
+      const stored = storageUtils.getItem(CONFIG.CHECK_COUNT_KEY);
+      if (stored !== null) {
+        this.checkCount = parseInt(stored, 10) || 0;
+      }
+
       // Check storage every minute
       this.intervalId = setInterval(() => {
         this.checkAndCleanup();
@@ -1192,6 +1321,18 @@
           console.log(`[DailyReview] History size (${itemCount}) exceeds soft limit (${CONFIG.HISTORY_SOFT_LIMIT}), cleaning up to ${CONFIG.HISTORY_CLEANUP_TARGET}`);
           const pruned = historyService.prune(history);
           historyService.save(pruned);
+
+          // Log storage report after cleanup
+          console.log('[DailyReview] Storage report after cleanup:');
+          storageUtils.logStorageReport();
+        }
+
+        // Log storage report every 10 checks (every 10 minutes)
+        this.checkCount++;
+        storageUtils.setItem(CONFIG.CHECK_COUNT_KEY, this.checkCount.toString());
+
+        if (this.checkCount % 10 === 0) {
+          storageUtils.logStorageReport();
         }
       } catch (e) {
         console.error('[DailyReview] Storage monitor error:', e);
@@ -4769,7 +4910,8 @@
       poolService,
       apiService,
       controller,
-      capabilityService
+      capabilityService,
+      storageUtils
     };
     return;
   }

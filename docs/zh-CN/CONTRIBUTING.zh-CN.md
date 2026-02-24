@@ -107,6 +107,16 @@ ensureListForLevel('ul', depth);
 - 方案：在容器上使用单个委托监听器
 - 效果：减少内存占用，更好地适应大量图片
 
+**7. localStorage 配额监控 (v2.4)**
+- 问题：无法了解 localStorage 使用情况
+- 方案：添加 `calculateStorageStats()` 和 `getStorageReport()`
+- 效果：主动监控防止配额错误，每 10 分钟自动报告
+
+**8. Markdown 渲染重构 (v2.4)**
+- 问题：`markdownToHtml` 函数 156 行，圈复杂度约 25
+- 方案：提取 `IndentDepthCalculator` 和 `ListLevelManager` 模块
+- 效果：复杂度从 25 降至约 12，提升可测试性和可维护性
+
 ### 性能指标
 
 对于 1000+ memos 的数据集：
@@ -187,8 +197,7 @@ node --check memos-daily-review-plugin.js
 ### 算法回归测试
 
 ```bash
-# 在受限环境下请使用 --test-isolation=none
-node --test --test-isolation=none tests/algorithm.test.js
+node --test tests/algorithm.test.js
 ```
 
 ### 调试
