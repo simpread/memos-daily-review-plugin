@@ -75,6 +75,7 @@
 
 ## 文档
 
+- [更新日志](../../CHANGELOG.md)
 - [开发指南（中文）](./CONTRIBUTING.zh-CN.md)
 - [Development Guide (English)](../../CONTRIBUTING.md)
 - [AI 开发参考](../../CLAUDE.md)

@@ -7,6 +7,7 @@ memos-daily-review-plugin/
 ├── memos-daily-review-plugin.js    # Main plugin (~4200 lines, single-file)
 ├── README.md                       # User documentation (English)
 ├── CONTRIBUTING.md                 # Development guide (English)
+├── CHANGELOG.md                    # Version history
 ├── CLAUDE.md                       # This file
 ├── .gitignore                      # Git ignore rules
 ├── assets/
@@ -250,7 +251,15 @@ return candidates[0] || null;
 
 ### 4. Markdown Rendering with Nested Lists
 
-**Location**: `utils.markdownToHtml()`
+**Location**: `utils.markdownToHtml()` + helper modules
+
+**Refactoring (v2.4)**:
+- **Problem**: Original function was 156 lines with complexity ~25
+- **Solution**: Extracted into focused modules:
+  - `IndentDepthCalculator`: Manages indentation stack (35 lines)
+  - `ListLevelManager`: Handles list nesting (45 lines)
+  - `markdownToHtml`: Main orchestration (100 lines)
+- **Impact**: Reduced complexity from 25 to ~12, improved testability
 
 **Key Features**:
 - Detects indentation level (Tab = 2 spaces)
@@ -260,21 +269,22 @@ return candidates[0] || null;
 - Uses DocumentFragment for batch DOM insertion
 
 ```javascript
-// Simplified logic
+// Simplified logic after refactoring
 const fragment = document.createDocumentFragment();
-const listStack = [];  // [{type: 'ul', depth: 0, element: <ul>}, ...]
+const depthCalc = IndentDepthCalculator.create();
+const listMgr = ListLevelManager.create(fragment);
 
 for (const line of lines) {
   const leading = line.match(/^[ \t]*/)[0].replace(/\t/g, '  ');
   const indentWidth = leading.length;
-  const depth = getListDepthForIndent(indentWidth);
+  const depth = depthCalc.getDepth(indentWidth);
   const trimmed = line.trim();
 
   if (ulMatch = trimmed.match(/^[-*+]\s+(.*)$/)) {
-    ensureListForLevel('ul', depth);
+    listMgr.ensureLevel('ul', depth, fragment);
     const li = document.createElement('li');
     li.innerHTML = formatInlineMarkdown(ulMatch[1]);
-    listStack[listStack.length - 1].element.appendChild(li);
+    listMgr.addItem(depth, li);
   }
   // ... similar for ordered lists, headings, paragraphs
 }
@@ -302,6 +312,13 @@ container.appendChild(fragment);
 - **Deck**: Cached by key `day-timeRange-count-batch`, keeps last 10
 - **History**: Max 3000 entries (hard limit), soft limit 2500 triggers cleanup to 2000 target, LRU eviction by "longest unseen", proactive monitoring every 60 seconds
 - **Capabilities**: TTL + refresh cooldown to avoid repeated unsupported endpoint probing
+
+**Storage Monitoring (v2.4)**:
+- `calculateStorageStats()`: Calculate size of all plugin keys
+- `getStorageReport()`: Generate human-readable report with size breakdown
+- `logStorageReport()`: Output to console
+- Automatic reporting: Every 10 minutes and after cleanup
+- Quota exceeded handling: Logs storage state before cleanup strategies
 
 ---
 

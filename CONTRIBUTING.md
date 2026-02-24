@@ -107,6 +107,16 @@ ensureListForLevel('ul', depth);
 - Solution: Single delegated listener on container
 - Impact: Reduced memory usage, better scaling with many images
 
+**7. Storage Quota Monitoring (v2.4)**
+- Problem: No visibility into localStorage usage
+- Solution: Added `calculateStorageStats()` and `getStorageReport()`
+- Impact: Proactive monitoring prevents quota errors, automatic reporting every 10 minutes
+
+**8. Markdown Rendering Refactoring (v2.4)**
+- Problem: `markdownToHtml` was 156 lines with complexity ~25
+- Solution: Extracted `IndentDepthCalculator` and `ListLevelManager` modules
+- Impact: Reduced complexity from 25 to ~12, improved testability and maintainability
+
 ### Performance Metrics
 
 For datasets with 1000+ memos:
