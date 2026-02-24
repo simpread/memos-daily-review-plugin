@@ -12,10 +12,18 @@ memos-daily-review-plugin/
 ├── .gitignore                      # Git ignore rules
 ├── assets/
 │   └── demo.gif                    # Demo animation
-└── docs/
-    └── zh-CN/                      # Chinese documentation
-        ├── README.zh-CN.md         # User documentation (Chinese)
-        └── CONTRIBUTING.zh-CN.md   # Development guide (Chinese)
+├── docs/
+│   ├── v2.4-features.md            # v2.4 feature documentation
+│   ├── v2.4-quick-reference.md     # v2.4 quick reference guide
+│   └── zh-CN/                      # Chinese documentation
+│       ├── README.zh-CN.md         # User documentation (Chinese)
+│       └── CONTRIBUTING.zh-CN.md   # Development guide (Chinese)
+├── scripts/
+│   └── verify-v2.4.sh              # v2.4 verification script
+└── tests/
+    ├── accessibility-focus.test.js # Accessibility tests
+    ├── algorithm.test.js           # Algorithm tests
+    └── v2.4-improvements.test.js   # v2.4 feature tests
 ```
 
 ---

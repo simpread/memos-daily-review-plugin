@@ -32,6 +32,7 @@
     LANGUAGE_KEY: 'memos-daily-review-language',
     BATCH_KEY: 'memos-daily-review-batch',
     CAPABILITY_KEY: 'memos-daily-review-capabilities',
+    CHECK_COUNT_KEY: 'memos-daily-review-check-count',
     AUTH_TOKEN_KEY: 'memos_access_token',
     AUTH_EXPIRES_KEY: 'memos_token_expires_at',
     DEFAULT_TIME_RANGE: '6months',
@@ -1293,6 +1294,12 @@
     checkCount: 0,
 
     init() {
+      // Load persisted check count
+      const stored = storageUtils.getItem(CONFIG.CHECK_COUNT_KEY);
+      if (stored !== null) {
+        this.checkCount = parseInt(stored, 10) || 0;
+      }
+
       // Check storage every minute
       this.intervalId = setInterval(() => {
         this.checkAndCleanup();
@@ -1322,6 +1329,8 @@
 
         // Log storage report every 10 checks (every 10 minutes)
         this.checkCount++;
+        storageUtils.setItem(CONFIG.CHECK_COUNT_KEY, this.checkCount.toString());
+
         if (this.checkCount % 10 === 0) {
           storageUtils.logStorageReport();
         }
