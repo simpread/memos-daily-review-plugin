@@ -197,8 +197,7 @@ node --check memos-daily-review-plugin.js
 ### 算法回归测试
 
 ```bash
-# 在受限环境下请使用 --test-isolation=none
-node --test --test-isolation=none tests/algorithm.test.js
+node --test tests/algorithm.test.js
 ```
 
 ### 调试

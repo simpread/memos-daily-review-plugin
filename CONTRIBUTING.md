@@ -197,8 +197,7 @@ node --check memos-daily-review-plugin.js
 ### Algorithm Regression Tests
 
 ```bash
-# NOTE: use --test-isolation=none in restricted environments
-node --test --test-isolation=none tests/algorithm.test.js
+node --test tests/algorithm.test.js
 ```
 
 ### Debugging

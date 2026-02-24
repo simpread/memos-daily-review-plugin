@@ -116,11 +116,11 @@ echo "6. 测试执行"
 echo "-----------"
 
 # v2.4 测试
-node --test --test-isolation=none tests/v2.4-improvements.test.js 2>&1 | grep -q "pass 17"
+node --test tests/v2.4-improvements.test.js 2>&1 | grep -q "pass 17"
 check "v2.4 测试全部通过 (17/17)"
 
 # 回归测试
-node --test --test-isolation=none tests/algorithm.test.js 2>&1 | grep -q "pass 6"
+node --test tests/algorithm.test.js 2>&1 | grep -q "pass 6"
 check "回归测试全部通过 (6/6)"
 
 echo ""
